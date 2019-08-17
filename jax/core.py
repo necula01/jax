@@ -223,7 +223,7 @@ def find_top_trace(xs):
  try:
    top_trace = max((x.trace for x in xs if isinstance(x, Tracer)),
                    key=attrgetter('level'))
- except ValueError:
+ except ValueError as e:
    return None
  else:
    return type(top_trace)(top_trace.master, cur_sublevel())

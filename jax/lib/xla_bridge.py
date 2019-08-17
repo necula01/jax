@@ -267,8 +267,11 @@ class _JaxComputationBuilder(xla_client.ComputationBuilder):
   # pylint: disable=invalid-name
 
   def Build(self, *args, **kwargs):
-    return super(_JaxComputationBuilder, self).Build(
-        *args, **kwargs)
+    res = super(_JaxComputationBuilder, self).Build(
+      *args, **kwargs)
+    txt = res.GetHloText()
+    # print(txt)
+    return res
 
   def NumpyArrayConstant(self, value, canonicalize_types=True):
     if canonicalize_types:
