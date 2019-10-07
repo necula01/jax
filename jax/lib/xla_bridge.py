@@ -269,8 +269,8 @@ class _JaxComputationBuilder(xla_client.ComputationBuilder):
   def Build(self, *args, **kwargs):
     res = super(_JaxComputationBuilder, self).Build(
       *args, **kwargs)
-    txt = res.GetHloText()
-    # print(txt)
+    #txt = res.GetHloText()
+    #print(txt)
     return res
 
   def NumpyArrayConstant(self, value, canonicalize_types=True):

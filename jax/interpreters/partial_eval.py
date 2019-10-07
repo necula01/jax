@@ -358,7 +358,7 @@ def trace_to_subjaxpr(master, instantiate, pvals):
   jaxpr, consts, env = tracers_to_jaxpr(in_tracers, out_tracers)
   out_pvals = [t.pval for t in out_tracers]
   del trace, in_tracers, out_tracers
-  print("trace_to_subjaxpr:\n{}".format(jaxpr))
+  #print("trace_to_subjaxpr:\n{}".format(jaxpr))
   yield jaxpr, (out_pvals, consts, env)
 
 

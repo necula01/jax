@@ -9,6 +9,7 @@ import functools
 from functools import partial
 import itertools
 from unittest import skip, SkipTest
+import time
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -23,6 +24,7 @@ from jax import numpy as jnp
 from jax import lax
 from jax import test_util as jtu
 from jax import ad_util
+from jax import ops
 from jax import lax_reference
 from jax.test_util import check_grads
 from jax.interpreters import xla
@@ -179,6 +181,24 @@ def trace(name):
         return res
     return func_wrapper
   return trace_func
+
+def timeit(f, what, max_iter=1000, min_time_sec=1.0):
+  """Time a function, execute several times."""
+  elapsed = 0
+  count = 0
+  # Call the function once to prime the caches
+  f()
+  while True:
+    start_time = time.time()
+    res = f()
+    end_time = time.time()
+    count += 1
+    elapsed += (end_time - start_time)
+    if elapsed >= min_time_sec or count >= max_iter:
+        break
+  print("Timeing({}) = {}ms ({} iterations)".format(what, elapsed / count * 1000., count))
+  return res
+
 
 # Whether to define the VJP. If True, then JVP is disabled. If False, then
 # VJP is done by means of JVP.
@@ -1141,6 +1161,70 @@ class ExperTest(jtu.JaxTestCase):
         f = api.pmap(lambda x: x**2, devices=api.devices())
         f = api.pmap(lambda x: x**2, devices=api.devices())
         print(f(onp.ones(4)))  # => [8 8 8 8]
+
+    def test_bug(self):
+        A = onp.ones((1, 1, 4, 4))
+        kernel = onp.ones((1, 1, 3, 3))
+        conv = lambda A, kernel, stride: lax.conv(A, kernel, stride, 'SAME')
+
+        print("this convolution call works")
+        print(conv(A, kernel, (1, 1)))
+        print("but after jitting it causes an AttributeError")
+        print(api.jit(conv)(A, kernel, (1, 1)))
+
+    def test_scatter(self):
+        a = onp.ones((2, 3))
+        b = onp.ones((3,4))
+        def std_matmul(x, y):
+            return jnp.matmul(x, y)
+
+        def myz():
+            z = onp.zeros((a.shape[0], b.shape[1]))
+            z[1,1] += 5
+            c1 = ops.index_add(z, (1,2), 3)
+            print("After add ", c1, z)
+        def my_matmul(x, y):
+            acc = onp.zeros((x.shape[0], y.shape[1]))
+            def loop_i(i, acc):
+                def loop_j(j, acc):
+                    def loop_k(k, acc):
+                        return ops.index_add(acc, (i, j), x[i, k]*y[k, j])
+                    return lax.fori_loop(0, x.shape[1], loop_k, acc)
+                return lax.fori_loop(0, y.shape[1], loop_j, acc)
+            return lax.fori_loop(0, x.shape[0], loop_i, acc)
+
+        #api.grad(lambda a: jnp.sum(my_matmul(a, b)))(a)
+        timeit(lambda: api.jit(my_matmul)(a, b), "my_matmul", max_iter=5000)
+        timeit(lambda: api.jit(std_matmul)(a, b), "std_matmul", max_iter=5000)
+        #api.jit(myz)()
+
+
+    def test_grad_scatter_gather(self):
+        def f(x):
+            return jnp.sum(ops.index_add(x, 1, x[2]))
+        print(api.grad(f)(onp.ones(5)))
+
+    def test_grad_while(self):
+        """Differentiation for while is not implemented."""
+        def body(i, acc):
+            return jnp.add(acc, acc)
+        def f(x):
+            return lax.fori_loop(0, 5, body, x)
+        print(api.grad(f)(3.))
+
+    def test_grad_jit(self):
+        """Testing grad of jit. Is the result jitted or not?"""
+        def f(x):
+            return jnp.sum(x ** 2.0)
+        a = onp.ones(1000)
+        print("Calling grad")
+        timeit(lambda: api.grad(f)(a), "grad")
+        print("Calling jit+grad")
+        timeit(lambda: api.grad(api.jit(f))(a), "jit+grad")
+        #api.grad(api.jit(f))(a)
+        print("Calling grad+jit")
+        timeit(lambda: api.jit(api.grad(f))(a), "grad+jit")
+
 
 if __name__ == '__main__':
   absltest.main()
