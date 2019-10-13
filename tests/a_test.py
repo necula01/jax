@@ -152,8 +152,101 @@ class Render(object):
     # return a bit more than just the image, for debug purposes.
     return img, (a, a_bg, t)
 
+  def render_no_batch(self, presence, types, templates, background):
+    """
+    Render template instances into a batch of images.
+
+    The dimensions are: batch of B images, of size (H,W) with C channels. There are T templates,
+    each described by an image (TH,TW) with C channels.
+
+    Assumptions: At each pixel there is at most one template instance center.
+
+    :param presence: a tensor[B, H, W], for each batch and each pixel, an entry +inf if at that
+      pixel we have the center of some template instantion. And -inf if there is no template
+      whose center is at the pixel. TODO: I think this can be derived from "types".
+    :param types: a tensor[B, H, W, T], for each batch and each pixel and each template type,
+      we have +inf if there is an instance of that template type at that pixel. We put -inf
+      for all the other templates at that pixel.
+    :param templates: a tensor[T, TH, TW, C], for each template type, its image.
+    :param background: a tensor[B, H, W, C] with the background
+    :return: a tensor[B, H, W, C], for each batch and pixel, the average of the contributions
+      of each template instance that overlap the pixel. For each template instance we
+      use the corresponding pixel from the template. If no template instance overlaps the
+      we use the background for the pixel.
+    """
+
+    # Extract and verify input shapes. pylint: disable=invalid-name
+    # In the comments, I use TH->h, TW->w ("small h") for clarity.
+    inf = 1e5  # Such that inf*0 = 0 and not nan, but fits into float32 with +1
+
+    B, H, W = presence.shape
+    B2, H2, W2, T = types.shape
+    assert B == B2 and H == H2 and W == W2, "Bad types shape"
+    T, TH, TW, C = templates.shape
+    B3, H3, W3, C2 = background.shape
+    assert B3 == B2 and H3 == H2 and W3 == W2 and C2 == C, "Bad background shape"
+
+    # Shortcut for padding.
+    dont = (0, 0, 0)
+
+    # Compute `a`: of each output pixel, which input pixels influence it.
+    # shape will be (H+h-1)(W+w-1)hw
+    w = np.eye(TH*TW).reshape(TH*TW, 1, TH, TW)  # OIHW.
+    # aka "FULL" padding in old-school frameworks.
+    x = jax.lax.pad(presence, -inf, ((TH-1, TH-1, 0), (TW-1, TW-1, 0)))
+    a_logits = df.conv2d(x[..., None], w, padding="VALID")
+
+    # Append a default background-claim of 0.0 (logits) via 0-padding channels.
+    a_logits = jax.lax.pad(a_logits, 0.0, (dont, dont, dont, (0, 1, 0)))
+    a_combined = df.softmax_cls(a_logits, axis=-1)
+    a_bg = a_combined[..., -1]
+    a = a_combined[..., :-1].reshape(B, H+TH-1, W+TW-1, TH, TW)
+
+    # We now have the background probabilities in `a_bg` as B(H+h-1)(W+w-1)
+    # and the influence probabilities in `a` as B(H+h-1)(W+w-1)hw
+
+    # What follows, is something very similar to `a`, but not about
+    # presence/claim anymore, but this time about which template to use, hence
+    # we call this one `t`, and the shape will be (H+h-1)(W+w-1)Thw.
+    x = df.softmax_cls(types, axis=-1)  # Softmax along classes (T).
+    w = np.eye(T*TW*TH).reshape(T*TW*TH, T, TH, TW)  # OIHW.
+    t = df.conv2d(x, w, padding=[(TH-1, TH-1), (TW-1, TW-1)])
+    t = t.reshape(B, H+TH-1, W+TW-1, T, TH, TW)
+
+    # We now have both `a` (claims of output pixels by objects) and
+    # `t` (similar, for each individual template), next, combine them.
+
+    # First, we mix the templates together according to the type compositions
+    # in `t`. Note that this still ignores `a` ("presence").
+    # Combine: (H+h-1)(W+w-1)Thw  and  ThwC  along  T  to get  (H+h-1)(W+w-1)hwC
+    t_mixed = t[..., None] * templates[None, None, ...]
+    t_mixed = jnp.sum(t_mixed, axis=-4)
+
+    # Second, combine this with the presences `a` to collect only those pixels
+    # which should actually be drawn, according to the claims.
+    # Combine: (H+h-1)(W+w-1)hwC  and  (H+h-1)(W+w-1)hw  to get  (H+h-1)(W+w-1)C
+    p = jnp.sum(t_mixed * a[..., None], axis=[-2, -3])
+
+    # Finally, remove the padding to get HWC, but note a[0:-0] needs special case.
+    none_if_zero = lambda x: (x if x != 0 else None)
+    Hlo, Hhi = TH//2, none_if_zero(-(TH//2))
+    Wlo, Whi = TW//2, none_if_zero(-(TW//2))
+    p = p[:, Hlo:Hhi, Wlo:Whi]
+
+    # Combine with the given background, which is also HWC,
+    # using the background-claim mask after removing its padding.
+    a_bg = a_bg[:, Hlo:Hhi, Wlo:Whi, None]
+    img = p * (1.0 - a_bg) + background * a_bg
+
+    # return a bit more than just the image, for debug purposes.
+    return img, (a, a_bg, t)
+
   def render_loops(self, presence, types, templates, background):
     """Render template instances into a batch of images.
+
+    This is a version written with loops, trying to validate the idea that
+    it is easier to write the loops code, and results in more readable code.
+    Virtually no attention has been paid to performance.
 
     See doc string for render1 above.
     """
