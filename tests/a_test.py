@@ -309,10 +309,49 @@ class Render(object):
             for c in range(C):
               output[b, i, j, c] = background[b, i, j, c]
 
-    return output
+    return output, (None, None, None)
 
 
 class RenderTest(jtu.JaxTestCase):
+
+  def check_all_implementations(self, presence, types, templates, background, desired):
+    """Test helper, pass a single image (B=1).
+
+    Uses multiple version of the code: render1, render1_no_batch, vmap(render1_no_batch),
+    and loops. Assert that the result is the desired image.
+
+    Params:
+      presence: tensor[H,W]
+      types: tensor[H,W,T]
+      templates: tensor[T,TW,TH,C]
+      background: tensor[H,W,C]
+      desired: tensor[H,W,C]
+
+    """
+    def check_one_implementation(name, func, add_batch=True):
+      """Check one implementation."""
+      img, (a, a_bg, t) = func(
+        presence[np.newaxis] if add_batch else presence,
+        types[np.newaxis] if add_batch else types,
+        templates,  # We never batch the templates
+        background[np.newaxis] if add_batch else background
+      )
+      print(("#################################\n"+
+            "Using {}\nimg={}\na={}\na_bg={}\nt={}\n").format(
+        name, img, a, a_bg, t
+      ))
+      np.testing.assert_allclose(img[0] if add_batch else img, desired)
+
+    render = Render()
+    check_one_implementation("render1", render.render1, add_batch=True)
+
+    check_one_implementation("render_no_batch", render.render_no_batch, add_batch=False)
+
+    # Now apply vmap. Add a batch axis, except for templates
+    render_batched = jax.vmap(render.render_no_batch, in_axes=(0, 0, None, 0))
+    check_one_implementation("vmap(render_no_batch)", render_batched, add_batch=True)
+
+    check_one_implementation("loops", render.render_loops, add_batch=True)
 
   def test_render1(self):
     # 1. Create the test data.
@@ -363,16 +402,7 @@ class RenderTest(jtu.JaxTestCase):
                         0.0*1.0 + 1.0*5.0], # T2_1
                        np.float32).reshape(H, W, C)
 
-    render = Render()
-    # Add the batch-dimension where necessary
-    img, (a, a_bg, t) = render.render1(
-        presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg=", img, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
-    np.testing.assert_allclose(img[0], desired)
-
-    img_loops = render.render_loops(presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg=", img)
-    np.testing.assert_allclose(img_loops[0], desired)
+    self.check_all_implementations(presence, types, templates, background, desired)
 
   def test_render2(self):
     # 1. Create the test data.
@@ -421,24 +451,4 @@ class RenderTest(jtu.JaxTestCase):
                         0.5*1.0 + 0.5*5.],  # T1_2 + T2_1
                        np.float32).reshape(H, W, C)
 
-    render = Render()
-    # Add the batch-dimension where necessary
-    img, (a, a_bg, t) = render.render1(
-        presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg=", img, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
-    np.testing.assert_allclose(img[0], desired)
-
-    img_no_batch, (a, a_bg, t) = render.render_no_batch(
-        presence, types, templates, background)
-    print("\nimg_no_batch=", img_no_batch, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
-    np.testing.assert_allclose(img_no_batch, desired)
-
-    # Now apply vmap
-    render_batched = jax.vmap(render.render_no_batch, in_axes=(0, 0, None, 0))
-    img_batch, (a, a_bg, t) = render_batched(
-      presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg_batch=", img_batch, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
-
-    img_loops = render.render_loops(presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg_loops=", img)
-    np.testing.assert_allclose(img_loops[0], desired)
+    self.check_all_implementations(presence, types, templates, background, desired)
