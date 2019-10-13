@@ -26,7 +26,7 @@ import numpy as np
 # from jax.interpreters.xla import DeviceArray
 # from jax.abstract_arrays import concretization_err_msg
 # from jax.lib import xla_bridge as xb
-# from jax import test_util as jtu
+from jax import test_util as jtu
 # from jax import tree_util
 
 from jax.config import config
@@ -61,11 +61,13 @@ df = DeepFried()
 
 class Render(object):
   """Corresponds to the render.py module"""
-  inf = 1e5  # Such that inf*0 = 0 and not nan, but fits into float32 with +1
+
 
   def render1(self, presence, types, templates, background):
     # Extract and verify input shapes. pylint: disable=invalid-name
     # In the comments, I use TH->h, TW->w ("small h") for clarity.
+    inf = 1e5  # Such that inf*0 = 0 and not nan, but fits into float32 with +1
+
     B, H, W = presence.shape
     B2, H2, W2, T = types.shape
     assert B == B2 and H == H2 and W == W2, "Bad types shape"
@@ -129,19 +131,32 @@ class Render(object):
     return img, (a, a_bg, t)
 
 
-class APITest(jtu.JaxTestCase):
+class RenderTest(jtu.JaxTestCase):
 
-  def test_grad_argnums(self):
+  def test_render1(self):
     # 1. Create the test data.
     inf = 1e5  # Such that inf*0 = 0 and not nan, but fits into float32 with +1
                # and we get 1/0 when softmaxing with logits using this.
 
-    # Presence logits: HW
     H, W = 1, 5  # pylint: disable=invalid-name
+    # Template types:
+    T = 2  # pylint: disable=invalid-name
+    # We assume an image 1x5 with two template instances aligned as follows:
+    #  Pixel: 0  1  2  3  4
+    #  T1:    -  T1 T1 T1 -
+    #  T2:    -  -   - T2 T2
+    #
+    # Presence logits: HW
+    # For each pixel, we use 'inf' if the image contains an instance
+    # of some template centered at that pixel. The 'types' tensor below
+    # says which template it is.
+    # We use -inf for a pixel if it does not contain the center of
+    # a template instance.
     presence = np.array([-inf, -inf, inf, -inf, inf], np.float32).reshape(H, W)
 
     # Type logits: HWT
-    T = 2  # pylint: disable=invalid-name
+    # For each pixel, and each template, whether the pixel contains the center
+    # of that template (+inf). And -inf ???
     types = np.array([[0., 0., +inf, 0., -inf],
                       [0., 0., -inf, 0., +inf]], np.float32).T.reshape(H, W, T)
 
@@ -152,8 +167,8 @@ class APITest(jtu.JaxTestCase):
     # but in order to account for the mirroring, using the second one for now.
     # (maybe we actually shouldn't do mirroring in the renderer since it might
     # be counter-intuitive? Let's change that later.)
-    templates = np.array([[0.3, 0.5, 1.0],
-                          [3.0, 5.0, 10.0]], np.float32).reshape(T, TH, TW, C)
+    #templates = np.array([[0.3, 0.5, 1.0],
+    #                      [3.0, 5.0, 10.0]], np.float32).reshape(T, TH, TW, C)
     templates = np.array([[1.0, 0.5, 0.3],
                           [10.0, 5.0, 3.0]], np.float32).reshape(T, TH, TW, C)
 
@@ -167,8 +182,8 @@ class APITest(jtu.JaxTestCase):
                         0.5*1.0 + 0.5*3.0,
                         0.0*1.0 + 1.0*5.0], np.float32).reshape(H, W, C)
 
-    # Add the batch-dimension where necessary
     render = Render()
+    # Add the batch-dimension where necessary
     actual, extra = render.render1(
         presence[None], types[None], templates, background[None])
     print(actual, extra)
