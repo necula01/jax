@@ -104,6 +104,7 @@ class Render(object):
     # shape will be (H+h-1)(W+w-1)hw
     w = np.eye(TH*TW).reshape(TH*TW, 1, TH, TW)  # OIHW.
     # aka "FULL" padding in old-school frameworks.
+    # t: tensor[B, H+2*(h-1), W+2*(w-1), T]
     x = jax.lax.pad(presence, -inf, (dont, (TH-1, TH-1, 0), (TW-1, TW-1, 0)))
     a_logits = df.conv2d(x[..., None], w, padding="VALID")
 
@@ -179,12 +180,12 @@ class Render(object):
     # In the comments, I use TH->h, TW->w ("small h") for clarity.
     inf = 1e5  # Such that inf*0 = 0 and not nan, but fits into float32 with +1
 
-    B, H, W = presence.shape
-    B2, H2, W2, T = types.shape
-    assert B == B2 and H == H2 and W == W2, "Bad types shape"
+    H, W = presence.shape
+    H2, W2, T = types.shape
+    assert H == H2 and W == W2, "Bad types shape"
     T, TH, TW, C = templates.shape
-    B3, H3, W3, C2 = background.shape
-    assert B3 == B2 and H3 == H2 and W3 == W2 and C2 == C, "Bad background shape"
+    H3, W3, C2 = background.shape
+    assert H3 == H2 and W3 == W2 and C2 == C, "Bad background shape"
 
     # Shortcut for padding.
     dont = (0, 0, 0)
@@ -194,13 +195,15 @@ class Render(object):
     w = np.eye(TH*TW).reshape(TH*TW, 1, TH, TW)  # OIHW.
     # aka "FULL" padding in old-school frameworks.
     x = jax.lax.pad(presence, -inf, ((TH-1, TH-1, 0), (TW-1, TW-1, 0)))
-    a_logits = df.conv2d(x[..., None], w, padding="VALID")
+    a_logits = df.conv2d(x[None, ..., None], w, padding="VALID")
+    # Remove the batch dimension introduced by convolution
+    a_logits = a_logits[0]
 
     # Append a default background-claim of 0.0 (logits) via 0-padding channels.
-    a_logits = jax.lax.pad(a_logits, 0.0, (dont, dont, dont, (0, 1, 0)))
+    a_logits = jax.lax.pad(a_logits, 0.0, (dont, dont, (0, 1, 0)))
     a_combined = df.softmax_cls(a_logits, axis=-1)
     a_bg = a_combined[..., -1]
-    a = a_combined[..., :-1].reshape(B, H+TH-1, W+TW-1, TH, TW)
+    a = a_combined[..., :-1].reshape(H+TH-1, W+TW-1, TH, TW)
 
     # We now have the background probabilities in `a_bg` as B(H+h-1)(W+w-1)
     # and the influence probabilities in `a` as B(H+h-1)(W+w-1)hw
@@ -210,8 +213,8 @@ class Render(object):
     # we call this one `t`, and the shape will be (H+h-1)(W+w-1)Thw.
     x = df.softmax_cls(types, axis=-1)  # Softmax along classes (T).
     w = np.eye(T*TW*TH).reshape(T*TW*TH, T, TH, TW)  # OIHW.
-    t = df.conv2d(x, w, padding=[(TH-1, TH-1), (TW-1, TW-1)])
-    t = t.reshape(B, H+TH-1, W+TW-1, T, TH, TW)
+    t = df.conv2d(x[None, ...], w, padding=[(TH-1, TH-1), (TW-1, TW-1)])
+    t = t.reshape(H+TH-1, W+TW-1, T, TH, TW)
 
     # We now have both `a` (claims of output pixels by objects) and
     # `t` (similar, for each individual template), next, combine them.
@@ -231,11 +234,11 @@ class Render(object):
     none_if_zero = lambda x: (x if x != 0 else None)
     Hlo, Hhi = TH//2, none_if_zero(-(TH//2))
     Wlo, Whi = TW//2, none_if_zero(-(TW//2))
-    p = p[:, Hlo:Hhi, Wlo:Whi]
+    p = p[Hlo:Hhi, Wlo:Whi]
 
     # Combine with the given background, which is also HWC,
     # using the background-claim mask after removing its padding.
-    a_bg = a_bg[:, Hlo:Hhi, Wlo:Whi, None]
+    a_bg = a_bg[Hlo:Hhi, Wlo:Whi, None]
     img = p * (1.0 - a_bg) + background * a_bg
 
     # return a bit more than just the image, for debug purposes.
@@ -424,6 +427,18 @@ class RenderTest(jtu.JaxTestCase):
         presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
     print("\nimg=", img, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
     np.testing.assert_allclose(img[0], desired)
+
+    img_no_batch, (a, a_bg, t) = render.render_no_batch(
+        presence, types, templates, background)
+    print("\nimg_no_batch=", img_no_batch, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
+    np.testing.assert_allclose(img_no_batch, desired)
+
+    # Now apply vmap
+    render_batched = jax.vmap(render.render_no_batch, in_axes=(0, 0, None, 0))
+    img_batch, (a, a_bg, t) = render_batched(
+      presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
+    print("\nimg_batch=", img_batch, "\na=", a, "\na_bg=", a_bg, "\nt=", t)
+
     img_loops = render.render_loops(presence[np.newaxis], types[np.newaxis], templates, background[np.newaxis])
-    print("\nimg=", img)
+    print("\nimg_loops=", img)
     np.testing.assert_allclose(img_loops[0], desired)
