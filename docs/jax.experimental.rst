@@ -8,5 +8,6 @@ jax.experimental package
     jax.experimental.optimizers
     jax.experimental.optix
     jax.experimental.stax
+    jax.experimental.mini_jax
 
 .. automodule:: jax.experimental
