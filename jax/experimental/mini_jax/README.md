@@ -16,6 +16,7 @@ and optimizations have been simplified or omitted:
   * JIT transformation is lazy, in the sense that applying transformations on
     the result of JIT results in the JIT function body being transformed. The
     actual compilation happens as late as possible.
+  * Conditionals as higher-order primitives.  
   * All transformations are composable.  
   * Reverse differentiation (GRAD) is careful to ensure that the cost of the
     reverse differentiation is within a constant-factor of the cost of the forward
@@ -24,15 +25,15 @@ and optimizations have been simplified or omitted:
   * A new toy transformation to estimate the FLOPS cost of the code, without
     actually running the computation, except as much as needed for when there
     is data-dependent FLOPS.
-  * Conditionals as higher-order primitives.
-
+  
 * Omitted JAX features and optimizations:
 
-  * All transformations are performed after tracing the function to the intermediate
-    language. This is called an "initial embeddeding" in JAX. 
-    In JAX, some transformation are performed online as the JAXPR 
-    is generated (and often the JAXPR is not even materialized). This has some
-    important benefits, which we discuss further down.  
+  * In mini-JAX all transformations are performed after tracing the function 
+    to the intermediate language. This is called an "initial embeddeding" in JAX. 
+    In JAX, some transformations, e.g., JVP and VMAP, are performed online 
+    as the JAXPR is generated (and often the JAXPR is not even materialized). 
+    This is an important feature that for now was left out of mini-JAX for 
+    simplicity. 
   * only the `float` type is supported and only a few arithmetic operators (`+`, `-`, 
     `*`, `**`). There are no tensors nor `numpy`.
   * no `scan`, `while_loop`.  
@@ -46,18 +47,18 @@ and optimizations have been simplified or omitted:
   * there is no caching of transformations or compilations.
   * there is no constant folding, beyond the part that is done by Python, 
     outside the tracer's control.
-  * perhaps others?
+  * perhaps other missing features?
 
- 
 ## Highlights and lessons learned
 
 The goal was to implement mini-JAX as simply as possible, but not simpler! It is
 easy to end up with an implementation that is too simple. Here are some of the 
-things that are non-obvious.
+things that are non-obvious. These lessons are meant to be relevant to both 
+mini-JAX and JAX, but are perhaps easier to understand from the mini-JAX code. 
 
 ### Introduction to JAX tracing
 
-Assume that we want to code up a transformation such that given a traceable 
+Assume that we want to code up a transformation such that given a 
 Python function `traceable_func`, then `jvp(traceable_func, arg, arg_tan)` 
 evaluates the perturbation of the result of `traceable_func` evaluated at 
 input `arg` given a perturbation of the input `arg_tan`. For example:
@@ -68,16 +69,17 @@ input `arg` given a perturbation of the input `arg_tan`. For example:
 Then `jvp(func0)(a, a_tan)` evaluates to `2 * a * a_tan`.
 
 JAX performs function transformations on an internal representation of
-the function, called JAXPR (JAX expressions). (Some transformations, e.g., JVP
+the function, called JAXPR (JAX expressions). (Mini-JAX performs all 
+transformations that way, but in real JAX some transformations, e.g., JVP
 are performed online, during tracing, and no JAXPR is materialized.)
-In this write-up (and in mini-JAX) we will not use specific details of
+For simplicity, in this write-up (and in mini-JAX) we will not use specific details of
 how JAXPR are implemented and are going to simply use symbolic expressions
 `Expr` with constructs such as `Var(v)` (for variables, where `v` is some
 internal unique identifier), `Literal(3.0)`, `Add(e1, e2)`, etc. For specific
-details in JAXPRs, see "Understanding JAXPR". 
+details in JAXPRs, see "Understanding JAXPR" writeup. 
 
-To obtain the symbolic expression, JAX does not try to parse the source code 
-of the function.
+To obtain the symbolic expression for the function to be transformed,
+JAX does not try to parse the source code of the function.
 Instead, it executes the function using special tracer objects as arguments. 
 A tracer object has a type, and a symbolic expression that denotes the 
 current value of the tracer. The tracer object also overloads
@@ -88,28 +90,28 @@ return tracers.
 
 A pseudo-code for how the tracing is invoked is roughly:
 ```
-  arg_typ: ExprType = type_of_val(arg)    # Abstract 'arg' to type, e.g., float, or float[3,4]   
-  in_t: Tracer = new_var_tracer(arg_typ)  # Create a tracer for a Var expression 
+  arg_typ: ExprType = type_of_val(arg)    # Abstract 'arg' to type, e.g., 'float', or 'float[3,4]'   
+  in_t: Tracer = new_var_tracer(arg_typ)  # Create a tracer initialized to a Var expression 
 ``` 
 Now we simply let the Python interpreter execute the user function: 
 ```
   primal_res_t: Tracer = traceable_user_func(in_t)
 ```
-Now `primal_res_t.expr` is a symbolic representation of the computation that was performed
+The result `primal_res_t.expr` is a symbolic representation of the computation that was performed
 on tracers by the user function. For a user function to be adequate for such tracing it must: 
 
-* use the arguments only in computations that use a designated set of operations (that
+* use the arguments only with a designated set of operators (that
   have been overloaded.) In mini-JAX, this are `+`, `-`, `*`, `**` with integer 
   exponent. JAX has a much richer set of primitive operations, and the `numpy`
   API has been implemented in terms of these primitive operations.   
   An example of inappropriate operations are library functions such as
-  `copy` or `pickle`, or even Python conditional constructs. 
-* the result of the function should be returned through the function result, 
+  `copy` or `pickle`, or Python conditional constructs. 
+* the result of the function should be returned through the function return value, 
   not through global state. The function can store values in mutable state 
   internally, but those values should not be used after the function returns, 
-  and the result should be returned directly. 
+  and the result should be returned through the return value. 
 
-There are a few interesting details in the way JAX tracing works. Normally, JAX
+Normally, JAX
 traces through Python control flow and function calls. For example, when tracing 
 the function `func1` below::
 ```
@@ -119,9 +121,9 @@ the function `func1` below::
       return y + x * 4 + z
     return inner(x * 3)
 ```    
-the resulting JAXPR is essentially `x * 3 + x * 4 + x * 2` (tracing through
-variable assignments, function calls, and lexical closures). In particular, 
-in this form of tracing, all the function calls are inlined. Loops and
+the resulting JAXPR is essentially `x * 3 + x * 4 + x * 2` (tracers are passed
+transparently through variable assignments, function calls, and lexical closures). 
+In particular, in this form of tracing, all the function calls are inlined. Loops and
 control flow are also inlined:
 ```
   def func1(x):
@@ -136,9 +138,14 @@ The above function traces to `(((x * 2) * 3) * 2) * 3`.
 
 ### Composable transformations through traceable interpreters
 
-One of the simplest things that one can do with a symbolic expression is to
-evaluate it using certain values for the variables. We call this standard
-evaluation to separate it from other evaluations we'll have. 
+Once we have the symbolic expression for a function to be transformed, one
+can think of writing transformations as a expression transformer. This 
+requires each transformed to be building expressions, and then we need to 
+evaluate the resulting expressions. Instead, JAX fuses the transformation 
+with the evaluation, and performs all transformations using custom evaluators. 
+
+The simplest evaluator is the standard evaluator, that computes the value
+of the symbolic expression given values for the variables:
 ```
   def std_eval(e: Expr, std_env: Dict[int, Value]) -> Value:
     if e is Var(v):
@@ -153,7 +160,7 @@ evaluation to separate it from other evaluations we'll have.
 Continuing the `jvp(traceable_func, arg, arg_tan)` example, the actual 
 transformation is performed lazily by evaluating the symbolic
 expression `primal_res_t.expr` with a non-standard evaluator. In our case we are going
-to write a `eval_jvp` function that takes an expression and computes its 
+to write an `eval_jvp` function that takes an expression and computes its 
 tangent given tangent values for the variables. First, we prepare a variable 
 environment with the input tangents:
 ```
@@ -161,9 +168,10 @@ environment with the input tangents:
 ```
 
 Often during non-standard evaluation we also need the standard value of
-a sub-expression. For `eval_jvp` this will be needed when evaluating the tangent
+a sub-expression. In `eval_jvp` this will be needed when evaluating the tangent
 of a multiplication; we need to use the tangents of the operands and also 
-their standard values. For this purpose we also set up a standard environment:
+their standard values. For this purpose we also set up a standard environment
+which we'll use with the standard evaluator:
 ```
   std_env = {in_t.expr: arg}
 ```
@@ -189,11 +197,11 @@ we obtain the symbolic expression `func0_e = Mul(Var(v), Var(v))`.
 To evaluate the tangent at point `arg = 3` we use a value `arg_tan = 1`,
 i.e., `jvp(func0)(3, 1)`. This leads to the call
 `eval_jvp(func0_e, {Var(v): 1}, {Var(v): 3})` and we should get the result `6`.
-Importantly, the `+` and `*` operations in from `eval_jvp` will operate 
+Importantly, the `+` and `*` operations in `eval_jvp` will operate 
 on naked Python values and will be performed directly by the interpreter. 
 
-What happens if we want to nest transformations: during the tracing of
-a function being transformed, we encounter another transformation. 
+What happens if we want to nest transformations (during the tracing of
+a function being transformed, we encounter another transformation)? 
 This kind of behavior arises naturally if one wants to compute the 
 second-derivative of a function:
 ```
@@ -203,74 +211,82 @@ second-derivative of a function:
     return jvp(func0, y, 1)
   second_derivative_at_3 = jvp(func1, 3, 1)
 ```
-Here, `func1` is being traced, and then we encounter `jvp(func0)`. At that 
+Here, `func1` is being traced as part of `jvp(func1)`, and then we
+encounter `jvp(func0)`. At that 
 point a nested tracing process starts, a new tracing variable is created for
 `x` and `func0` is traced. The rough sequence of steps that happen are: 
 ```
   arg1_typ: ExprType = type_of_val(3)       
   in1_t: Tracer = new_var_tracer(arg1_typ)  # = float
-  res1 : Tracer = func1(in1_t)
+  res1_t : Tracer = func1(in1_t)
+     # during func1(in1_t) the following happens:
      arg0_type: ExprType = type_of_val(in1_t)  # = float
      in0_t: Tracer = new_var_tracer(arg0_type)
      res0_t: Tracer = func0(in0_t)  # = 'in0_t * in0_t'
      tan_env0 = {in0_t.expr: 1}
      std_env0 = {in0_t.expr: in1_t}  # We are eval_jvp with a tracer object
      res0_tan = eval_jvp(res0.expr, tan_env0, std_env0)  # = '1 * in1_t + in1_t * 1'
-     res1 = res0_tan  
+     res1_t = res0_tan  
   tan_env1 = {in1_t.expr: 1}
   std_env1 = {in1_t.expr: 3)
-  res1_tan = eval_jvp(res1.expr, tan_env1, std_env1)  # = 1 * 1 + 1 * 1 = 2
+  res1_tan = eval_jvp(res1_t.expr, tan_env1, std_env1)  # = 1 * 1 + 1 * 1 = 2
 ``` 
 
-Note that in the first invocation of `eval_jvp(res0.expr)` some values were treacers, so 
-the result is a tracer. In the second invocation `eval_jvp(res1.expr)` all values
-were constants, so the `+` and `*` were executed directly by the Python interpreter
+Note that in the first invocation of `eval_jvp(res0.expr)` some values are tracers, so 
+the result is a tracer. In the second invocation `eval_jvp(res1_t.expr)` all values
+are constants, so the `+` and `*` were executed directly by the Python interpreter
 and the result is the Python constant `2`.
 
-The key was that the non-standard evaluators implementing the transformations
+The key is that the non-standard evaluators implementing the transformations
 must be traceable themselves: they must be functional and use their arguments
 only with supported primitives. If you follow this rule, then you can write
 new transformations that compose nicely with the other ones.  
 
-### Type-safe intermediate language is very important
+### Many Python programs hide statically-well-typed computations
 
-TODO
+The classic adage "well-typed programs don't go wrong" comes in very handy here.
+We would like to have a static type system for our symbolic expressions such 
+that (1) the output of tracing is a well-typed expression, (2) a well-typed 
+expression can be evaluated without error, can be JIT-compiled and executed
+without error, and can be transformed without errors into well-typed expressions.
+Here, by "error" we mean some internal errors in the JAX transformation machinery,
+excluding data-dependent errors such as division-by-zero. 
+
+The reason why this type safety property is very useful is that we want to 
+give all the JAX errors during tracing (during `traceable_user_func(in_t)`)
+because that is when the Python interpreter executes user code and can 
+localize the error with precise stack tracers. In instead, we allow 
+any of our standard or custom evaluators and JIT-compilers to fail, the 
+stack trace will contain only JAX internal code. 
+
+JAX's internal representation JAXPR is typed, and so is mini-JAX's internal
+`Expr` language, with types representing the shape and base type of a tensor. 
+In fact, the real JAX has a richer hierarchy of types that it called 
+`abstract values`. 
+
+One of the secrets of JAX's success is that many `numpy` numerical and ML programs
+can be easily written with Python control flow based only on array shape values. Thus
+one can trace the code with tracer values that capture the shapes to obtained
+a statically-typed symbolic expression specialization of the original program.
 
 
-### Careful sharing in the intermediate language is important
+### The need for functions in the intermediate language
 
-The choice of the intermediate language is important to ensure that the sharing
-that arises naturally from the computation is preserved. For example, this code
-`x = x + x; x = x + x; x = x + x` has three operations but with a symbolic
-expression representation we may end up with an exponential printed form: 
-`((x + x) + (x + x)) + ((x + x) + (x + x))`. Note that the actual symbolic 
-data structure will likely contain the proper sharing, since only 3 `+` nodes
-are constructed.   
+*TLDR*: JIT has to defer the compilation and execution of a block of code. 
+This forces us to introduce functions and function calls in the internal
+expression language. At the moment we have only anonymous, non-recursive functions
+that are called only once. Nevertheless, this is a source of complexity in 
+the internal expression language and the code.  
 
-Nevertheless, I wanted to keep the simple symbolic expressions:
-* it is actually simpler: operators applied to sub-expression arguments.
-* it is a functional representation of a whole computation DAG, the expression
- meaning is determined by the meaning of function's variables, we can cache
- results by expression object identity.
+Another reason to have functions is the presence of a higher-order 
+conditional construct. 
 
-With such an expression representation it is crucial to be careful about 
-sharing. We achieve this in mini-JAX by making *heavy use of memoization: a
-distinct expression instance is processed at most once*. We added a visitor
-helper function for expressions that takes care of memoization. The cost of 
-memoization I believe is approximately the same as using JAXPRs intermediate variables, 
-although one can argue that in JAXPRs the cost of exposing sharing is paid only 
-when the JAXPR is constructed.   
+TODO: explain
 
-JAXPRs instead are written with explicit naming of all intermediate computations.
-This adds more indirection, makes it somewhat harder to see the expression
-in the debugger, and requires a more complex data structure, with things like
-topological sorting after transformations. 
-
-In retrospect, I am not sure that the simplicity of representation as symbolic
-expressions is worth the extra cost of being careful about preserving sharing.    
-   
 ### Various strategies for closure conversion
 
+*TLDR*: Once we introduce functions in the expression language, we have to 
+decide how to han
 
 *This section needs complete rewrite*
 
@@ -316,6 +332,39 @@ when we encounter arguments from a shallower scope depth, we replace them with
 fresh variables that are collected as part of a tracing environment accompanying
 the tracing values. See below the code in `Tracer`.
 
+### Careful sharing in the intermediate language is important
+
+The choice of the intermediate language is important to ensure that the sharing
+that arises naturally from the computation is preserved. For example, this code
+`x = x + x; x = x + x; x = x + x` has three operations but with a symbolic
+expression representation we may end up with an exponential printed form: 
+`((x + x) + (x + x)) + ((x + x) + (x + x))`. Note that the actual symbolic 
+data structure will likely contain the proper sharing, since only 3 `+` nodes
+are constructed.   
+
+Nevertheless, I wanted to keep the simple symbolic expressions:
+* it is actually simpler: operators applied to sub-expression arguments.
+* it is a functional representation of a whole computation DAG, the expression
+ meaning is determined by the meaning of function's variables, we can cache
+ results by expression object identity.
+
+With such an expression representation it is crucial to be careful about 
+sharing. We achieve this in mini-JAX by making *heavy use of memoization: a
+distinct expression instance is processed at most once*. We added a visitor
+helper function for expressions that takes care of memoization. The cost of 
+memoization I believe is approximately the same as using JAXPRs intermediate variables, 
+although one can argue that in JAXPRs the cost of exposing sharing is paid only 
+when the JAXPR is constructed.   
+
+JAXPRs instead are written with explicit naming of all intermediate computations.
+This adds more indirection, makes it somewhat harder to see the expression
+in the debugger, and requires a more complex data structure, with things like
+topological sorting after transformations. 
+
+In retrospect, I am not sure that the simplicity of representation as symbolic
+expressions is worth the extra cost of being careful about preserving sharing.    
+   
+
 ### Real-JAX can differentiate through control-flow
 
 TODO
@@ -323,18 +372,6 @@ TODO
 Fusing transformations?
 
 
-### The need for functions in the intermediate language
-
-JIT has to defer the compilation and execution of a block of code. 
-This forces us to introduce functions and function calls in the internal
-expression language. At the moment we have only anonymous, non-recursive functions
-that are called only once. Nevertheless, this is a source of complexity in 
-the internal expression language and the code.  
-
-Another reason to have functions is the presence of a higher-order 
-conditional construct. 
-
-TODO: explain conditionals
 
 ### Efficient reverse differentiation is tricky
 
@@ -381,20 +418,19 @@ Mini-JAX is structured as follows:
 * General tracing machinery (`mini_jax.py`):
 
    * `Expr` is a class representing symbolic expressions (JAXPR), constructed with 
-   `Operator`s applied to `Expr` arguments. 
+   `Operator`s applied to `Expr` arguments. All operators are considered to be
+   strict in the arguments.
    * In addition to arguments, an operator application has parameters. 
    In essence, each `Operator` represents a parameterized family. For 
    example, the `Operator.LITERAL` has 0 arguments and 1 parameter with the 
-   value of the literal. 
+   value of the literal. The `Operator.COND_GE` and `Operator.JIT_CALL` carry
+   the branch and function as parameters.
    * `ExprType` represents types associated with each `Expr`. In 
-    mini-JAX only the `float` type is implemented. It is important that `Expr` be
-    typed, and that well-typed `Expr` cannot result in late compilation and
-    transformation errors. We want to catch all ill-formed `Expr` early, during
-    tracing, while the errors have access to the proper Python stack trace. 
-   * `Function` is a class to represent closed functions over `Expr`. 
-   * `Tracer` is the class of tracing values. A tracing value has not 
-   only the `Expr` but also information about the scope nesting depth at 
-   which it was constructed and the environment (tracing values from shallower
+    mini-JAX only the `float` type is implemented.  
+   * `Function` is a class to represent *closed* functions over `Expr`. 
+   * `Tracer` is the class of tracer values. A tracer value has not 
+   only the symbolic `Expr` but also information about the scope nesting depth at 
+   which it was constructed and the environment (tracer values from shallower
    scope depth that are used).
    
 * `mini_jax_jit.py`: JIT transformation machinery. In the context of 
@@ -407,12 +443,15 @@ Mini-JAX is structured as follows:
 * `mini_jax_grad.py`: GRAD transformation (backward differentiation). 
   The public function exposed is `grad(func)(a1, a2)`.
 
-* `mini_jax_flops.py`: FLOPS counting transformation.
+* `mini_jax_flops.py`: A toy FLOPS counting transformation.
+
+* `tests`: unit tests, many showing the symbolic expression for many 
+  transformations. 
 
 TODO
 -----
 
-* Explore how can we do better for grad(jit)
-* Make a pass over the tests
-* Try to use hypothesis for property-based testing. See bug in 01b8036 (wrong
-  order of arguments in conditional functionals that return multiple values.)
+* Make a cleanup pass over the tests
+* Improve the property-based testing using hypothesis.
+* Explore fusing of forward transformations
+* Explore constant folding for JVP and GRAD

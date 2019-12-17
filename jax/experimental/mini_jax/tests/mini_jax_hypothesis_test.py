@@ -42,11 +42,15 @@ from jax.experimental.mini_jax.mini_jax_util import pp_list, pp_str, \
   PrettyPrint, map_list
 
 import numpy as np
+
 try:
-  from hypothesis.strategies._internal.core import cacheable, defines_strategy_with_reusable_values
+  from hypothesis.strategies._internal.core import cacheable, \
+    defines_strategy_with_reusable_values
 except ImportError:
   def cacheable(f):
     return f
+
+
   def defines_strategy_with_reusable_values(f):
     return f
 
@@ -68,67 +72,135 @@ if HYPOTHESIS_EXAMPLES == 0:
 else:
   USE_HYPOTHESIS = True
 
-class NumericalDiffDiscontinuity(Exception):
+
+class NumericalDifferentiationError(Exception):
+  """Signals either a discontinuity in the derivative, or other numerical errors."""
   pass
 
-class FakeMiniJax(object):
+
+class MiniJaxWrapper(object):
+  def __init__(self, verbose_trace=False, variant="fake"):
+    self.verbose_trace = verbose_trace
+    self.variant = variant
+    self.indent_level = 0
+    self.counter = 0
+
+  def header(self):
+    return " " * self.indent_level + self.variant + ":"
+  def make_global_dict(self):
+    """Make global dict for exec"""
+
+    def wrapped_cond_ge(*args):
+      counter = self.counter
+      self.counter += 1
+      if self.verbose_trace:
+        print("{} cond_ge({}) pred={}".format(self.header(), counter, args[0]))
+      self.indent_level += 1
+      res = self.cond_ge(*args)
+      if self.verbose_trace:
+        print("{} cond_ge({}) res={}".format(self.header(), counter, res))
+      self.indent_level -= 1
+      return res
+
+    def wrapped_transformer_method(method_name, transformer):
+      """Func is a transformer Callable->Callable"""
+      def doit(transformed, *args):
+        counter = self.counter
+        self.counter += 1
+        if self.verbose_trace:
+          print("{} enter {}({}) args={}".format(self.header(), method_name, counter, args))
+        self.indent_level += 1
+        res = transformed(*args)
+        if self.verbose_trace:
+          print("{} exit {}({}) res={}".format(self.header(), method_name, counter, res))
+        self.indent_level -= 1
+        return res
+
+      return lambda f: lambda *args: doit(transformer(f), *args)
+
+    def sum(*args):
+      return functools.reduce(lambda acc, a: acc + a, args, 0.)
+
+    return dict(cond_ge=wrapped_cond_ge,
+                jvp=wrapped_transformer_method("jvp", self.jvp),
+                grad=wrapped_transformer_method("grad", self.grad),
+                sum=sum,
+                variant=self.variant)
+
+
+class FakeMiniJax(MiniJaxWrapper):
   """A fake implementation of the mini-JAX transformations."""
 
-  @staticmethod
-  def cond_ge(pred, true_func, true_ops, false_func, false_ops):
+  def __init__(self, verbose_trace=False):
+    super(FakeMiniJax, self).__init__(verbose_trace=verbose_trace,
+                                      variant="fake")
+
+  def cond_ge(self, pred, true_func, true_ops, false_func, false_ops):
     if pred >= 0.:
       return true_func(*true_ops)
     else:
       return false_func(*false_ops)
 
-  @staticmethod
-  def sum(*args):
-    return functools.reduce(lambda acc, a: acc + a, args, 0.)
-
-  @staticmethod
-  def jit(func):
+  def jit(self, func):
     return func
 
-  @staticmethod
-  def jvp(func):
+  def jvp(self, func):
     """Estimate tangent numerically."""
+
     def wrapped(*args_with_tangents):
       assert len(args_with_tangents) % 2 == 0
       nr_orig_vars = len(args_with_tangents) // 2
       args = args_with_tangents[0:nr_orig_vars]
       args_tan = args_with_tangents[nr_orig_vars:]
 
-      EPS = 1e-4
-      def eval_eps(eps):
-        return func(*[x + eps * t
-                      for x, t in zip(args, args_tan)])
-
-      def numeric_tan(first, second):
-        # Return the tangent from first->second (for arguments at distance EPS)
-        if isinstance(first, tuple):
-          return [(s - f) / EPS for f, s in zip(first, second)]
-        else:
-          return (second - first) / EPS
-
-      # Check that tangent is the same x - EPS, x + EPS, x + 2*EPS
-      # If not, try also x + 2 * ESP
-      res_m1 = eval_eps(- EPS)
-      res_0 = eval_eps(0.)
-      res_1 = eval_eps(EPS)
-      tan_0 = numeric_tan(res_m1, res_0)
-      tan_1 = numeric_tan(res_0, res_1)
-      if not np.allclose(tan_0, tan_1):
-        raise NumericalDiffDiscontinuity()
-
-      if isinstance(res_0, tuple):
-        return tuple(itertools.chain(res_0, tan_0))
+      # When we do higher-order differentiation, the arg_tan would be very small
+      # We scale them to be around 1e-5
+      non_zero_args_tan = [a_tan for a_tan in args_tan
+                           if not np.isclose(0., a_tan, atol=1e-9)]
+      if not non_zero_args_tan:
+        EPS = 1e-5
+        tangent_tolerance = 1e-2  # For the output tangents
       else:
-        return (res_0, tan_0)
+        min_abs = np.linalg.norm(non_zero_args_tan, ord=-np.inf)
+        max_abs = np.linalg.norm(non_zero_args_tan, ord=np.inf)
+        if max_abs / min_abs > 1e9:
+          # Range is too high
+          msg = "Tangent ranges too high (min={}, max={})"
+          raise NumericalDifferentiationError(msg.format(min_abs, max_abs))
+        EPS = 1e-5 / min_abs
+        tangent_tolerance = min_abs / 100.
+      rounding_digits = - int(np.floor(np.log10(tangent_tolerance)))
+
+      res_0 = func(*args)  # The base value
+      is_tuple = isinstance(res_0, tuple)
+      if not is_tuple:  # Force it a tuple
+        res_0 = (res_0,)
+
+      def eval_slope(nr_eps):
+        """Eval the slope of the function at a certain # of EPS from args."""
+        res = func(*[x + nr_eps * EPS * t
+                     for x, t in zip(args, args_tan)])
+        res = res if is_tuple else (res,)
+        slope = [np.round((r - r0) / (nr_eps * EPS),
+                          rounding_digits) for r, r0 in zip(res, res_0)]
+        return slope
+
+      # Check that tangent is the same x - EPS, x, and x + EPS
+      tan_m1 = eval_slope(-1)
+      tan_1 = eval_slope(1)
+
+      if not np.allclose(tan_1, tan_m1, atol=tangent_tolerance):
+        msg = "Tangent discontinuity ({} and {})"
+        raise NumericalDifferentiationError(msg.format(tan_m1, tan_1))
+
+      if is_tuple:
+        return tuple(itertools.chain(res_0, tan_1))
+      else:
+        return (res_0[0], tan_1[0])
 
     return wrapped
 
-  @staticmethod
-  def grad(func):
+  def grad(self, func):
     jvp_func = FakeMiniJax.jvp(func)
 
     def wrapped(*args):
@@ -147,17 +219,21 @@ class FakeMiniJax(object):
     return wrapped
 
 
-SUT_MJ = dict(jit=mj.jit, grad=mj.grad, jvp=mj.jvp, cond_ge=mj.Ops.cond_ge,
-              sum=FakeMiniJax.sum)
-SUT_FAKE = dict(jit=FakeMiniJax.jit, grad=FakeMiniJax.grad,
-                jvp=FakeMiniJax.jvp, cond_ge=FakeMiniJax.cond_ge,
-                sum=FakeMiniJax.sum)
+class ActualMiniJax(MiniJaxWrapper):
+  def __init__(self, verbose_trace=False):
+    super(ActualMiniJax, self).__init__(verbose_trace=verbose_trace,
+                                        variant="mini-jax")
+    self.cond_ge = mj.Ops.cond_ge
+    self.jvp = mj.jvp
+    self.grad = mj.grad
+    self.jit = mj.jit
 
 
-def check_code_example(code: PrettyPrint):
+def check_code_example(code: PrettyPrint,
+                       verbose_trace=False):
   """Run a code example, with MJ and with a fake implementation."""
   code_str = str(code)
-  globals_dict = dict(**SUT_MJ)
+  globals_dict = ActualMiniJax(verbose_trace=verbose_trace).make_global_dict()
   Globals.reset()
   compare_results = True
   try:
@@ -173,15 +249,17 @@ def check_code_example(code: PrettyPrint):
     ))
     raise
 
-  globals_dict = dict(**SUT_FAKE)
+  if verbose_trace:
+    print("\n*** FakeMiniJax ***\n")
+  globals_dict = FakeMiniJax(verbose_trace=verbose_trace).make_global_dict()
   try:
     exec(code_str, globals_dict)
     _result_fake = globals_dict["_result"]
-  except NumericalDiffDiscontinuity:
-    print("WARNING: numerical diff discontinuity in Fake computation")
+  except NumericalDifferentiationError as e:
+    print("WARNING: numerical diff error in Fake computation " + str(e))
     compare_results = False
-  except OverflowError:
-    print("WARNING: overflow in Fake computation")
+  except OverflowError as e:
+    print("WARNING: overflow in Fake computation " + str(e))
     _result_fake = "overflow"
   except Exception as e:
     print("Fake JAX execution failed on\n{}\nwith traceback\n{}".format(
@@ -194,9 +272,75 @@ def check_code_example(code: PrettyPrint):
     if _result_fake == "overflow" or _result_mj == "overflow":
       assert _result_mj == _result_fake
     else:
-      assert np.allclose(_result_mj, _result_fake, rtol=0.1), \
+      assert np.allclose(_result_mj, _result_fake, atol=1.e-2), \
         "Value mismatch (MJ vs Fake):\n{}\n  vs\n{}\non\n{}".format(
           _result_mj, _result_fake, code)
+
+
+class FakeMiniJaxTest(jtu.JaxTestCase):
+  """Tests primarily the numerical differentiation in FakeMiniJax"""
+
+  def test_fake_jvp_discountinuity(self):
+    """Test the fake JVP, at discontinuity"""
+    fake_mj = FakeMiniJax().make_global_dict()
+    def f0(v2):
+      return fake_mj["cond_ge"](v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+
+    def f1(v2):
+      return fake_mj["cond_ge"](0. - v2, lambda tv: 1., (0.,), lambda fv: 0.,
+                                 (0.,))
+
+    with self.assertRaisesRegex(NumericalDifferentiationError, ""):
+      fake_mj["jvp"](f0)(0.0, 3.0)
+    with self.assertRaisesRegex(NumericalDifferentiationError, ""):
+      fake_mj["jvp"](f1)(0.0, 3.0)
+
+  def test_fake_jvp_discountinuity_integrated(self):
+    """Test the fake JVP, at discontinuity"""
+    code = """
+def f0(v2):
+  return cond_ge(v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+v17, v18 = jvp(f0)(0.0, 3.0)
+
+def f1(v2):
+  return cond_ge(0. - v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+v19, v20 = jvp(f1)(0.0, 3.0)
+  
+_result = (v17, v18, v19, v20)
+"""
+    check_code_example(code, verbose_trace=True)
+
+  def test_fake_jvp_rounding(self):
+    """We round numerical differential, to try to not affect following conditionals"""
+    fake_mj = FakeMiniJax().make_global_dict()
+    def f1(x):
+      return 3. * x
+
+    y, y_tan = fake_mj["jvp"](f1)(1., 2.)
+    self.assertEqual(6., y_tan)  # Must be rounded to exactly 6.
+
+  def test_fake_jvp_rounding_integrated(self):
+    """We round numerical differential, to try to not affect following conditionals"""
+    code = """
+def f1(x):
+  return 2. * x
+y, y_tan = jvp(f1)(1., 2.)
+# y_tan should be 4, but may be a bit below or above
+_result = cond_ge(y_tan - 4., lambda tv: 1., (0.,), lambda fv: 0., (0.,)) 
+print("{} result = {} y_tan={}".format(variant, _result, y_tan))
+"""
+    check_code_example(code, verbose_trace=True)
+
+  def test_fake_jvp_small_tangents(self):
+    """We round numerical differential, to try to not affect following conditionals"""
+    fake_mj = FakeMiniJax().make_global_dict()
+    def func(x):
+      return 2. * x
+
+    y, y_tan = fake_mj["jvp"](func)(1., 1.5e-5)
+
+    # y_tan should be 4, but may be a bit below or above
+    self.assertEqual(3.e-5, y_tan)  # Must be rounded to exactly 2e-5.
 
 
 ###
@@ -244,12 +388,14 @@ class Environment(object):
 
   def difference(self, other: 'Environment'):
     """Get an environment with only stuff new since 'other'"""
+
     def diff_rec(where, sentinel):
       if where is sentinel:
         return ()
       else:
         assert where, "Sentinel not found"
         return (where[0], diff_rec(where[1], sentinel))
+
     return Environment(diff_rec(self._vars, other._vars),
                        diff_rec(self._funcs, other._funcs),
                        self.depth)
@@ -386,7 +532,7 @@ class JaxExampleStrategy(st.SearchStrategy):
                       range(nr_false_ops)]
 
         true_ops_pp = (
-              pp_str("(") >> pp_list(true_args, hsep=", ") >> pp_str(",)"))
+            pp_str("(") >> pp_list(true_args, hsep=", ") >> pp_str(",)"))
         false_ops_pp = (
             pp_str("(") >> pp_list(false_args, hsep=", ") >> pp_str(",)"))
         cond_args = pp_list([pred, true_func_name, true_ops_pp,
@@ -430,7 +576,7 @@ class JaxExampleStrategy(st.SearchStrategy):
     for res_idx in range(body_nr_res):
       results.append(pp_str("sum(") >>
                      pp_list(this_body_results[res_idx * vars_per_result:(
-                                                                         res_idx + 1) * vars_per_result],
+                                                                             res_idx + 1) * vars_per_result],
                              hsep=", ") >> pp_str(")"))
     results_pp = pp_list(results, hsep=", ")
     if env.depth == 0:
@@ -457,7 +603,8 @@ class JaxExampleStrategy(st.SearchStrategy):
   def draw_expr_op(self, data, env: Environment) -> PrettyPrint:
     op = st.sampled_from(["+", "-", "*", "**"]).do_draw(data)
     if op == "**":
-      pow = st.integers(min_value=1, max_value=5).map(str).do_draw(data)
+      # Keep exponent lower, to avoid numerical issues that make testing harder
+      pow = st.integers(min_value=1, max_value=3).map(str).do_draw(data)
       return pp_list([self.draw_expr_atom(data, env), "**", pow])
     else:
       return pp_list([self.draw_expr_atom(data, env), op,
@@ -509,41 +656,57 @@ class JaxGenTest(jtu.JaxTestCase):
       self.skipTest("Must pass JAX_HYPOTHESIS_EXAMPLES=NNN to enable this test")
     check_code_example(body)
 
-  def test_fake_jvp_discountinuity(self):
-    """Test the fake JVP, at discontinuity"""
-    code = """
-def f0(v2):
-  return cond_ge(v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
-v17, v18 = jvp(f0)(0.0, 3.0)
-_result = (v18, v17)
-"""
-    check_code_example(code)
-
-  def test_fake_jvp_discountinuity_2(self):
-    """Test the fake JVP, at discontinuity"""
-    code = """
-def f0(v2):
-  return cond_ge(0. - v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
-v17, v18 = jvp(f0)(0.0, 3.0)
-_result = (v18, v17)
-"""
-    check_code_example(code)
-
-
   def test_repro(self):
     """Bug found with hypothesis."""
     code = """
-def f0(v1):
-  def f5(v6):
-    return v6, v6
-  def f8(v9):
-    return 0., 0.
-  v3, v4 = cond_ge(5.0, f5, (v1,), f8, (0.,))
-  return v3
-v16 = grad(f0)(0.0)
-_result = v16
+def f1(v2, v3):
+  def f5(v6, v7):
+    v8 = v7
+    return sum(v8)
+  def f9(v10):
+    v11 = v10
+    return sum(v11)
+  v4 = cond_ge(0.0, f5, (0.0, 0.0,), f9, (v3,))
+  def f13(v14):
+    v15 = 1.0
+    v16 = v3
+    return sum(v16, v15)
+  def f17(v18):
+    v19, v20 = jvp(f9)(v18, v18)
+    v21 = v20
+    return sum(v21, v20, v19)
+  v12 = cond_ge(0.0, f13, (v4,), f17, (v4,))
+  def f23(v24, v25):
+    v26 = 0.0
+    v27 = 0.0
+    return sum(v27, v26)
+  def f28(v29):
+    v30 = f13(0.0)
+    v31 = 0.0
+    return sum(v31, v30)
+  v22 = cond_ge(0.0, f23, (0.0, 0.0,), f28, (0.0,))
+  v32 = f28(0.0)
+  v33 = f23(0.0, 0.0)
+  v34 = f17(v32)
+  v35 = f13(v34)
+  v36 = f9(v35)
+  v37 = f5(v36, v36)
+  return sum(v22, v12, v4, v32, v33, v34, v35, v36, v37)
+def f38(v39):
+  v40 = 0.0
+  v41 = 0.0
+  return sum(v41, v40)
+v0 = cond_ge(0.0, f1, (0.0, 0.0,), f38, (0.0,))
+def f42(v43):
+  v44, v45 = jvp(f1)(0.0, 0.0, 0.0, v43)
+  v46 = 0.0
+  return sum(v46, v45, v44)
+v47 = f42(v0)
+v48 = f38(0.0)
+v49 = f1(0.0, 0.0)
+_result = sum(v0, v47, v48, v49),
 """
-    check_code_example(code)
+    check_code_example(code, verbose_trace=True)
 
 
 if __name__ == '__main__':

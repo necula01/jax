@@ -350,3 +350,17 @@ class GradTest(jtu.JaxTestCase):
   in n0}
       """, str(mj.trace(mj.grad(func))(0.).pp()))
 
+  def test_grad_jvp(self):
+    def f0(v1):
+      def inner(y):
+        return y
+
+      _, v17 = mj.jvp(inner)(0., v1)
+      return v17
+
+    _result = mj.grad(f0)(0.)
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  in 1.0}
+      """, str(mj.trace(mj.grad(f0))(0.).pp()))

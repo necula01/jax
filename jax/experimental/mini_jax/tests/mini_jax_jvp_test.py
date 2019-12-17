@@ -311,4 +311,3 @@ class JvpTest(jtu.JaxTestCase):
                          2. + 14. + 13., 14.),
                         mj.jvp(func)(-5., 1.),
                         check_dtypes=True)
-
