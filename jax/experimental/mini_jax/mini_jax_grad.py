@@ -93,7 +93,8 @@ class Grad(object):
     adjoints = {}  # Dict[int, Value] - the accumulated adjoints
     for body, body_out_adj in zip(func.bodies, out_adj):
       reverse_expr_graph(body, None)
-      adjoints[id(body)] = body_out_adj
+      # The body may occur more than once
+      adjoints[id(body)] = adjoints.get(id(body), 0.) + body_out_adj
 
     # Build an environment for each variable used in the body of the function
     # Used to evaluate lazily values that are needed from the forward-pass.

@@ -321,4 +321,32 @@ class GradTest(jtu.JaxTestCase):
       in n17}
       """, str(mj.trace(mj.grad(func))(5.).pp()))
 
+  def test_cond_grad_shared_body(self):
+    def func(x):
+      def f5(y):
+        # We use the same body twice, we have to count the adjoints from each
+        z = 3. * y
+        return z, z
+
+      v3, v4 = mj.jit(f5)(x)
+      return v3 + v4
+    def func_equiv(v1):
+      return 2. * v1 * 3.
+
+    self.assertAllClose(func_equiv(0.), func(0.), check_dtypes=True)
+    self.assertAllClose(func_equiv(1.), func(1.), check_dtypes=True)
+
+    self.assertAllClose(6.,
+                        mj.grad(func)(0.),
+                        check_dtypes=True)
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = jit_call[ func={lambda v3 v4 v5.
+                        # v3: float, v4: float, v5: float
+                        n0 = add v4 v5
+                        n1 = mul 3.0 n0
+                        in n1} ] v0 1.0 1.0
+  in n0}
+      """, str(mj.trace(mj.grad(func))(0.).pp()))
 

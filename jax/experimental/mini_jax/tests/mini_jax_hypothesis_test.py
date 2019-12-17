@@ -531,23 +531,17 @@ _result = (v18, v17)
 
 
   def test_repro(self):
+    """Bug found with hypothesis."""
     code = """
 def f0(v1):
-  v2 = v1
   def f5(v6):
-    v7 = v6
-    return sum(v7), sum(v7)
+    return v6, v6
   def f8(v9):
-    v10 = v9
-    v11 = 0.0
-    return sum(v11), sum(v10)
-  v3, v4 = cond_ge(0.0, f5, (v2,), f8, (v2,))
-  v12, v13 = f8(0.0)
-  v14, v15 = f5(0.0)
-  return sum(v4, v3, v2, v12, v13, v14, v15)
+    return 0., 0.
+  v3, v4 = cond_ge(5.0, f5, (v1,), f8, (0.,))
+  return v3
 v16 = grad(f0)(0.0)
-v17 = f0(0.0)
-_result = sum(v16, v17)
+_result = v16
 """
     check_code_example(code)
 
