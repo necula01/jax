@@ -269,7 +269,6 @@ can be easily written with Python control flow based only on array shape values.
 one can trace the code with tracer values that capture the shapes to obtained
 a statically-typed symbolic expression specialization of the original program.
 
-
 ### The need for functions in the intermediate language
 
 *TLDR*: JIT has to defer the compilation and execution of a block of code. 
@@ -339,18 +338,19 @@ that arises naturally from the computation is preserved. For example, this code
 `x = x + x; x = x + x; x = x + x` has three operations but with a symbolic
 expression representation we may end up with an exponential printed form: 
 `((x + x) + (x + x)) + ((x + x) + (x + x))`. Note that the actual symbolic 
-data structure will likely contain the proper sharing, since only 3 `+` nodes
+data structure will likely contain the proper sharing, since only three `+` nodes
 are constructed.   
 
-Nevertheless, I wanted to keep the simple symbolic expressions:
-* it is actually simpler: operators applied to sub-expression arguments.
+Nevertheless, I wanted to experiments with simple symbolic expressions:
+* it is actually simpler: just operators applied to sub-expression arguments.
 * it is a functional representation of a whole computation DAG, the expression
  meaning is determined by the meaning of function's variables, we can cache
  results by expression object identity.
+* dead-code naturally falls out
 
 With such an expression representation it is crucial to be careful about 
-sharing. We achieve this in mini-JAX by making *heavy use of memoization: a
-distinct expression instance is processed at most once*. We added a visitor
+sharing. We achieve this in mini-JAX by making **heavy use of memoization: a
+distinct expression instance is processed at most once**. We added a visitor
 helper function for expressions that takes care of memoization. The cost of 
 memoization I believe is approximately the same as using JAXPRs intermediate variables, 
 although one can argue that in JAXPRs the cost of exposing sharing is paid only 
@@ -362,15 +362,25 @@ in the debugger, and requires a more complex data structure, with things like
 topological sorting after transformations. 
 
 In retrospect, I am not sure that the simplicity of representation as symbolic
-expressions is worth the extra cost of being careful about preserving sharing.    
+expressions is worth the extra cost of being careful about preserving sharing.
    
+### Real-JAX gives better errors can differentiate through control-flow
 
-### Real-JAX can differentiate through control-flow
+Perhaps the most important JAX features that is not reflected in mini-JAX
+is JAX's ability to perform some transformations inline, during tracing. This 
+has the major advantages that (1) errors are reported during tracing when the 
+user-program's stack trace is available, and (2) one can apply differentiation
+transformations on a program that contains data-dependent control flow. JAX does
+this by carrying the actual concrete value as it traces the program, which 
+enables it to resolve control flow. There is also a minor cost advantage of 
+not having to materialize and traverse multiple times the JAXPR. 
 
-TODO
+JAX tries hard to do all transformations inline. The only cases when it cannot
+do so are if a `jit`, or `pmap` transformation is present, or if we have 
+higher-order control-flow (`cond` and `while`).
 
-Fusing transformations?
 
+TODO: fusing transformations in mini-JAX. 
 
 
 ### Efficient reverse differentiation is tricky

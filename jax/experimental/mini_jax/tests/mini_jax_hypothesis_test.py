@@ -12,7 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""An attempt to use Hypothesis to generate interested inputs for JAX.
+"""An attempt to use Hypothesis to generate interesting inputs for JAX.
+
+The generator stresses nested functions with 1 or 2 arguments and 1 or 2 results,
+with nested transformations. The correctness criterion is that mini-JAX does
+not crash and it produces results that are very close to those produced by
+a FakeMiniJax for which `jit` is a noop and differentiation is computed
+numerically. (There are still warts in the numerical differentiation, due to
+handling of discontinuities due to `cond_ge`, numerical errors especially
+for higher-order differentiation.)
+
+The generator is pretty good, but Hypothesis is spending a lot of time trying
+to minimize the example if it finds a failure.
 
 Use as follows:
   JAX_NUM_GENERATED_CASES=1 JAX_HYPOTHESIS_EXAMPLES=2 pytest -n auto --durations=20 jax/experimental/mini_jax/tests/mini_jax_hypothesis_test.py --hypothesis-show-statistics --hypothesis-verbosity=verbose

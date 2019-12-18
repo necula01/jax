@@ -400,7 +400,7 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
 
   def test_grad_concrete(self):
-    """Gradient with concrete control-flow"""
+    """Gradient with concrete control-flow", and jit"""
     def func(x1, y1):
       if x1 >= 0:
         return x1 * y1
@@ -422,3 +422,16 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     # cannot make_jaxpr after grad
     with self.assertRaisesRegex(TypeError, "Abstract value passed to `bool`"):
       print(api.make_jaxpr(api.grad(func, argnums=(0, 1)))(3., 4.))
+
+  def test_grad_concrete_cond(self):
+    """Gradient with concrete control-flow and cond"""
+    def func(x1, y1):
+      if x1 >= 0:
+        return lax.cond(True, y1, lambda tv: tv * 2., y1, lambda fv: fv * 3.)
+      else:
+        return x1 + y1
+
+    with self.assertRaisesRegex(
+        NotImplementedError,
+        "Forward-mode differentiation rule for 'cond' not implemented"):
+      api.grad(func)(3., 4.)
