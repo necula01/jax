@@ -242,20 +242,21 @@ must be traceable themselves: they must be functional and use their arguments
 only with supported primitives. If you follow this rule, then you can write
 new transformations that compose nicely with the other ones.  
 
-### Many Python programs hide statically-well-typed computations
+### Many Python numerical contain statically-well-typed computations waiting to come out
 
 The classic adage "well-typed programs don't go wrong" comes in very handy here.
 We would like to have a static type system for our symbolic expressions such 
 that (1) the output of tracing is a well-typed expression, (2) a well-typed 
 expression can be evaluated without error, can be JIT-compiled and executed
 without error, and can be transformed without errors into well-typed expressions.
-Here, by "error" we mean some internal errors in the JAX transformation machinery,
-excluding data-dependent errors such as division-by-zero. 
+Here, by "error" we mean some internal errors in the JAX transformation and
+compilation machinery,
+excluding data-dependent run-time errors such as division-by-zero. 
 
 The reason why this type safety property is very useful is that we want to 
 give all the JAX errors during tracing (during `traceable_user_func(in_t)`)
 because that is when the Python interpreter executes user code and can 
-localize the error with precise stack tracers. In instead, we allow 
+localize the error with precise stack traces. If instead, we allow 
 any of our standard or custom evaluators and JIT-compilers to fail, the 
 stack trace will contain only JAX internal code. 
 
@@ -264,72 +265,135 @@ JAX's internal representation JAXPR is typed, and so is mini-JAX's internal
 In fact, the real JAX has a richer hierarchy of types that it called 
 `abstract values`. 
 
-One of the secrets of JAX's success is that many `numpy` numerical and ML programs
+One of the secrets of the success of JAX's tracing-based approach to transformation
+is that many `numpy` numerical and ML programs
 can be easily written with Python control flow based only on array shape values. Thus
-one can trace the code with tracer values that capture the shapes to obtained
+one can trace the code with tracer values that capture the shapes to extract
 a statically-typed symbolic expression specialization of the original program.
 
 ### The need for functions in the intermediate language
 
-*TLDR*: JIT has to defer the compilation and execution of a block of code. 
-This forces us to introduce functions and function calls in the internal
-expression language. At the moment we have only anonymous, non-recursive functions
-that are called only once. Nevertheless, this is a source of complexity in 
-the internal expression language and the code.  
+With the tracing described so far all Python control flow, including functions
+and conditionals get inlined and the expression denoting a function to be
+transformed does not need to have control-flow, functions, or scopes. This 
+simple semantics would make it very easy to write transformations. 
 
-Another reason to have functions is the presence of a higher-order 
-conditional construct. 
+In reality, JAXPRs (and mini-JAX `Expr`) have scopes and function calls, for
+several reasons. 
 
-TODO: explain
-
-### Various strategies for closure conversion
-
-*TLDR*: Once we introduce functions in the expression language, we have to 
-decide how to han
-
-*This section needs complete rewrite*
-
-A special transformation in JAX is `jit` which prepares the code of the traced
-function for compilation for a device. The actual compilation happens only
-when the function is invoked. If there is another transformation, e.g., `grad`,
-applied before invocation, the body of the jitted function is transformed 
-appropriately. This means that `grad(jit(func))` is approximately the same
-as `jit(grad(func))`. (This is not quite true, `grad` after `jit` typically 
-can do fewer optimizations because it is operating with code that contains 
-function calls, while `grad` before `jit` can do better since it operates
-on plain expressions.) 
- 
-To achieve this lazy-JIT effect, JAX has a special JAXPR primitive `xla_call` 
-to carry the body of the function. These are the only functions in JAXPR, regular
-Python functions have been inlined. When we have nested `jit`, we obtain
-nested `xla_call` in JAXPR.  
-
-Taking the example above, and applying the `jit` transformation to the `inner` 
-function:
+First, the JIT transformation requires a portion of the computation to be 
+compiled, perhaps for a specific device or hardware. For example, the `jit`
+transformation in the example below requests the compilation of the body 
+of `inner`.  
 ```
   def func1(x)
     z = x * 2
     def inner(y):
       return y + x * 4 + z
     return jit(inner)(x * 3)
-```    
-results in the following JAXPR:
+```   
+Furthermore, the compilation cannot all happen during tracing because if there
+are enclosing transformations, e.g., `grad(func1)`, then the computation required
+by `grad` has to be performed in the same JIT compilation scope as `jit(inner)`. 
+This means that upon encountering a `jit` transformation the expression 
+corresponding to the function is captured as a function in the intermediate
+language. (It is not desirable to require `jit` to always be the top-most 
+transformation, because we may want to put the `jit` in a library function, 
+while allowing the library user to request a gradient computation, or any
+other transformation.)
+
+The JAXPR language has functions, but is not really higher-order, 
+because functions are not first-class objects. They can only be used as 
+parameters to a few special higher-order operators (in mini-JAX: `Operator.JIT_CALL`,
+and `Operator.COND_GE`; in JAX, the similar control-flow and compilation-related
+operators). The functions in JAXPR are:
+* closed (all the data they need is passed explicitly through parameters),
+* typed,
+* anonymous, and called in a single place. These conditions can be relaxed, e.g., by
+caching and reusing traced functions, but that would make some transformations
+truly interprocedural. 
+
+In addition to JIT, in JAX the conditionals also take advantage of functions. 
+Since we rely on tracing using the Python interpreter to capture the 
+symbolic expressions, we will not see regular Python control flow. Instead, 
+we ask the programmer to use a higher-order conditional construct to capture
+both branches of a conditional as functions:
+```
+jax.ops.cond(pred, true_arg, true_func, false_arg, false_dunc) 
+```
+The semantics is: `if pred then true_func(true_arg) else false_func(false_arg)`.
+This operator is strict in the `pred`, `true_arg`, and `false_arg` in the sense
+that they are evaluated no matter which branch is taken. 
+
+The above concrete syntax is mostly due to the limitations of Python tracing. 
+In JAX and mini-JAX we choose an internal representation that carries two 
+functionals for the branches. As a further incentive
+to use a higher-order operator, the HLO language to which JAX compiles
+has a similar higher-order construct. There are other ways of course to encode 
+conditionals, e.g., by introducing a lazy operator.
+
+The higher-order operators are the most complicated in the intermediate language. 
+For example, the `grad` and `jvp` rules for conditionals are 30 and respectively
+20 lines of code, compared to two lines for the arithmetic operations.    
+
+### Various strategies for closure conversion during tracing
+
+Once we introduce functions in the expression language, we have to 
+decide how to handle capturing computations from the Python nested static
+scopes. Consider again the following example of a `jit`:
+```
+  def func1(x)
+    z = x * 2
+    def inner(y):
+      return y + x * 4 + z
+    return jit(inner)(x * 3)
+```
+
+Clearly we want the `x * 2` computation outside of the `jit`, and presumably, 
+the programmer intends to have the `x * 4` computation inside the jit, even 
+though the data dependencies for `x * 4` are ready before we enter the `jit`
+scope. 
+This is not a clear design requirement though, perhaps the `inner` function
+is in a library and was written without thinking about `jit`, or other
+transformations coming from the dynamic scope. 
+
+JAX and mini-JAX do different things here. JAX does pretty aggressive constant
+folding, meaning that it does computations as eagerly as possible. This 
+can be viewed as an optimization, but users are also sometimes surprised
+when they see multiple JIT-compilations for sub-expressions, when they 
+expected only a single JIT-compilation. There is ongoing debate among
+the JAX designers how to handle this (perhaps forcing some computations
+to stay in the JIT scope in which they were written.)
+
+In mini-JAX, for simplicity, all computations have a dependency on the 
+dynamically-nearest enclosing transformation scope (all transformation,
+not just JIT). Essentially the code above traces to 
 `xla_call (lambda y, x, z: y + x * 4 + z) (x * 3) x (x * 2)`.
 Note that the body of `inner` is kept as an anonymous function. Also, 
 the body is "closed", and is passed explicitly the *environment values* for `x`
-and `z`. 
+and `z`. The computation for `x * 4` is kept in the body. 
 
-Also note that the computations `x * 2` and `x * 3` are kept outside the jitted
-function, as they were written. This is important, because we want the user 
-to have control over how and on what device the computations are performed. 
-Achieving this effect is tricky. In a pure data flow tracing implementation,
-meaning that a tracing value knows only its symbolic expression form, there is 
-no way to distinguish between the `x * 4` that was traced inside `inner` and the
-`x * 2` from outside. To achieve this effect, we must keep as global state the 
-*scope nesting depth* where a tracing value is being build. During tracing
-when we encounter arguments from a shallower scope depth, we replace them with 
-fresh variables that are collected as part of a tracing environment accompanying
-the tracing values. See below the code in `Tracer`.
+This is not trivial to achieve. From a pure data dependence perspective, 
+when the Python interpreter encounters `x * 4` it looks the same as if it 
+were written outside `inner`. We solve this by introducing global state
+in the tracing: each time a new transformation scope is entered, a
+global counter is incremented and when the symbolic expression for `x * 4`
+is build, it is tagged with the scope nesting depth. When the final result 
+of tracing `inner` is obtained, all the computations in it that belong to 
+enclosing scopes are lifted out of the function. For example, the symbolic 
+expression for `x * 2` constructed outside `inner` is encounted in the 
+computation of the return value of `inner`. At that point it is replaced
+with a fresh variable, and lifted as a new parameter to `inner`. 
+This code is in `mini_jax.py:Tracer.build`. 
+
+The functional branches of conditionals are handled similarly. 
+
+TODO: one can argue that for conditionals and for JIT is is important to 
+keep computations dependent on the dynamic scope where they were created, 
+but perhaps for other computations we can follow strict data dependence
+and allow the optimizer to lift them as needed. Perhaps one can explore 
+such a mixed strategy in mini-JAX (and JAX), but for simplicity this is not
+yet done. 
 
 ### Careful sharing in the intermediate language is important
 
@@ -368,38 +432,43 @@ expressions is worth the extra cost of being careful about preserving sharing.
 
 Perhaps the most important JAX features that is not reflected in mini-JAX
 is JAX's ability to perform some transformations inline, during tracing. This 
-has the major advantages that (1) errors are reported during tracing when the 
-user-program's stack trace is available, and (2) one can apply differentiation
-transformations on a program that contains data-dependent control flow. JAX does
+has the major advantages that (1) one can apply differentiation
+transformations on a program that contains data-dependent control flow, 
+and (2) errors are reported during tracing when the 
+user-program's stack trace is available. JAX does
 this by carrying the actual concrete value as it traces the program, which 
 enables it to resolve control flow. There is also a minor cost advantage of 
 not having to materialize and traverse multiple times the JAXPR. 
 
 JAX tries hard to do all transformations inline. The only cases when it cannot
-do so are if a `jit`, or `pmap` transformation is present, or if we have 
+do so are if a `jit`, or `pmap` transformation are present, or if we have 
 higher-order control-flow (`cond` and `while`).
 
-
-TODO: fusing transformations in mini-JAX. 
-
+TODO: fusing transformations in mini-JAX should be doable, hopefully without 
+too much complication.  
 
 ### Efficient reverse differentiation is tricky
 
 Implementing reverse differentiation correctly is not hard, if all you care 
 is functional correctness. The "complexity correctness" is quite a bit harder.
 At some point, I had an implementation that was traversing the expressions
+bottom-up
 and constructing a gradient (set of partial derivatives) data structure with
-addition, scaling, and variable uses. Being careful about sharing in expressions
-meant that at most one gradient node was being built for one distinct 
-expression object. In a second pass, the gradient data structure was traversed 
-to accumulate the partial derivatives. Here too was important to memoize 
-the traversal of the gradients. Even after these two careful traversal, I 
-could still end with exponential blowup. An example code (due to Dougal) was:
+addition and scaling. Using memoization for expression, we ensure that 
+for each expression instance we construct one instance of a gradient structure. 
+As long as all the scaling is by constants, the various
+factors can be associated together and all is fine. But as soon as we start
+having (1) non-constant scaling factors arising from non-linear expressions, 
+and (2) result of an expression used by multiple other expressions, then 
+
+An example code that gives rise to expensive gradient computation was 
+(suggested by Dougal):
 ```
    z = a * (z + z)
-   z = a * (z + z)
+   z = b * (z + z)
    ...
 ```   
+
 The proper way to compute gradients is to traverse an expression only after
 the parent expressions have been traversed, and for each we have accumulated
 the adjoint. To do this using a symbolic expression language we have

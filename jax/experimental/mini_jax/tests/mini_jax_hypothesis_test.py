@@ -127,12 +127,16 @@ class MiniJaxWrapper(object):
         self.indent_level -= 1
         return res
 
-      return lambda f: lambda *args: doit(transformer(f), *args)
+      if self.verbose_trace:
+        return lambda f: lambda *args: doit(transformer(f), *args)
+      else:
+        return transformer
 
     def sum(*args):
       return functools.reduce(lambda acc, a: acc + a, args, 0.)
 
     return dict(cond_ge=wrapped_cond_ge,
+                jit=wrapped_transformer_method("jit", self.jit),
                 jvp=wrapped_transformer_method("jvp", self.jvp),
                 grad=wrapped_transformer_method("grad", self.grad),
                 sum=sum,
@@ -212,7 +216,7 @@ class FakeMiniJax(MiniJaxWrapper):
     return wrapped
 
   def grad(self, func):
-    jvp_func = FakeMiniJax.jvp(func)
+    jvp_func = self.jvp(func)
 
     def wrapped(*args):
       partial_derivatives = []
@@ -267,10 +271,10 @@ def check_code_example(code: PrettyPrint,
     exec(code_str, globals_dict)
     _result_fake = globals_dict["_result"]
   except NumericalDifferentiationError as e:
-    print("WARNING: numerical diff error in Fake computation " + str(e))
+    print("WARNING: numerical diff error in Fake computation: " + str(e))
     compare_results = False
   except OverflowError as e:
-    print("WARNING: overflow in Fake computation " + str(e))
+    print("WARNING: overflow in Fake computation: " + str(e))
     _result_fake = "overflow"
   except Exception as e:
     print("Fake JAX execution failed on\n{}\nwith traceback\n{}".format(
@@ -670,52 +674,28 @@ class JaxGenTest(jtu.JaxTestCase):
   def test_repro(self):
     """Bug found with hypothesis."""
     code = """
-def f1(v2, v3):
-  def f5(v6, v7):
-    v8 = v7
-    return sum(v8)
-  def f9(v10):
-    v11 = v10
-    return sum(v11)
-  v4 = cond_ge(0.0, f5, (0.0, 0.0,), f9, (v3,))
-  def f13(v14):
-    v15 = 1.0
-    v16 = v3
-    return sum(v16, v15)
-  def f17(v18):
-    v19, v20 = jvp(f9)(v18, v18)
-    v21 = v20
-    return sum(v21, v20, v19)
-  v12 = cond_ge(0.0, f13, (v4,), f17, (v4,))
-  def f23(v24, v25):
-    v26 = 0.0
-    v27 = 0.0
-    return sum(v27, v26)
-  def f28(v29):
-    v30 = f13(0.0)
-    v31 = 0.0
-    return sum(v31, v30)
-  v22 = cond_ge(0.0, f23, (0.0, 0.0,), f28, (0.0,))
-  v32 = f28(0.0)
-  v33 = f23(0.0, 0.0)
-  v34 = f17(v32)
-  v35 = f13(v34)
-  v36 = f9(v35)
-  v37 = f5(v36, v36)
-  return sum(v22, v12, v4, v32, v33, v34, v35, v36, v37)
-def f38(v39):
-  v40 = 0.0
-  v41 = 0.0
-  return sum(v41, v40)
-v0 = cond_ge(0.0, f1, (0.0, 0.0,), f38, (0.0,))
-def f42(v43):
-  v44, v45 = jvp(f1)(0.0, 0.0, 0.0, v43)
-  v46 = 0.0
-  return sum(v46, v45, v44)
-v47 = f42(v0)
-v48 = f38(0.0)
-v49 = f1(0.0, 0.0)
-_result = sum(v0, v47, v48, v49),
+def f1(v2):
+  def f3(v4, v5):
+    v6 = v5
+    v7 = 0.0 + 0.0
+    return sum(v7, v6)
+  def f8(v9):
+    v10, v11 = jvp(f3)(0.0, 0.0, 0.0, v9)
+    v12 = 0.0 + 0.0
+    v13 = 0.0 + 0.0
+    return sum(v13, v12, v11, v10)
+  v14 = f8(v2)
+  v15 = f3(v14, v14)
+  return sum(v14, v15)
+def f16(v17):
+  v18 = 0.0
+  v19 = 0.0
+  return sum(v19, v18)
+v0 = cond_ge(0.0, f1, (1.0,), f16, (0.0,))
+v20 = grad(f1)(v0)
+v21 = f16(0.0)
+v22 = f1(v21)
+_result = sum(v20, v0, v21, v22)
 """
     check_code_example(code, verbose_trace=True)
 
