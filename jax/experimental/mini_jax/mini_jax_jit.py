@@ -13,14 +13,24 @@
 # limitations under the License.
 """
 Transformation: JIT
----------------------------
+--------------------
 
+The JIT transformation in mini-JAX consists of pretty-printing the symbolic
+expressions to Python source code, and `exec`-ing the code. This is very simple
+but does expose the interesting aspects of supporting JIT. Most of these
+aspects permeate the core mini-JAX (through the presence of higher-order
+`JIT_CALL` operator), so the code in this file is actually not very interesting.
 
+You can set the environment variable `MINI_JAX_LOG_COMPILES=1` to see
+the code being compiled.
+
+Concrete examples are in `tests/mini_jax_test.py`.
 """
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
@@ -125,7 +135,7 @@ class Jit(object):
 
   @staticmethod
   def compile_and_execute(func: Function, args: Sequence[Value]) -> Value:
-    """Compile the function into a Python string that can be eval
+    """Compile the function into a Python string that can be exec.
 
     Args:
       args: actual Python values (no TracingVals)
@@ -135,7 +145,8 @@ class Jit(object):
                                      "_result")
     locals = {str(iv): arg for iv, arg in zip(func.invars, args)}
     compiled_str = str(compiled)
-    #print("Running compiled function:\n" + compiled_str)
+    if os.getenv("MINI_JAX_LOG_COMPILES", 0):
+      print("Running compiled function:\n" + compiled_str)
     exec(compiled_str, {}, locals)
     return locals['_result']
 

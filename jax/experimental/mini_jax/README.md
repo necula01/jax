@@ -455,3 +455,4 @@ TODO
 * Improve the property-based testing using hypothesis.
 * Explore fusing of forward transformations
 * Explore constant folding for JVP and GRAD
+* Explore writing JVP with lazy std_eval, like FLOPS

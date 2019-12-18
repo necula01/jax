@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Forward differentiation
-======================
+Transformation: Forward differentiation
+---------------------------------------
 
-For forward differentiation we write a transformation that computes
-recursively for each expression the value along with the perturbations of
-the value given the values and perturbations of the variables.
+For forward differentiation we write a custom evaluator that evaluates
+expressions to a pair of values, the primal result and the tangent result,
+given pairs of values for the variables.
 
+Concrete examples are in `tests/mini_jax_jvp_test.py`.
 """
 from __future__ import absolute_import
 from __future__ import division

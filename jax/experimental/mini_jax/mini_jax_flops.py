@@ -31,6 +31,8 @@ The flops may depend on the actual values (e.g., for conditionals). If the flops
 in the body of a JIT are a constant then they are lifted outside the JIT,
 otherwise they are done inside the JIT. If the flops of the conditional branches
 are the same constants, they are lifted outside the conditional.
+
+Concrete examples are in `tests/mini_jax_flops_test.py`.
 """
 from __future__ import absolute_import
 from __future__ import division

@@ -12,14 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 """
-Backward differentiation
-=========================
+Transformation: Backward differentiation
+-----------------------------------------
 
 For backward differentiation we write a transformation that increments
 the adjoints (cotangent) for the subexpressions, given the adjoints for each
-expression. This effectively computes vector-Jacobian product.
+expression. This effectively computes vector-Jacobian (VJP) product.
 
 To achieve the "backward differentiation" effect, we must process first
 the top-level expression before processing the sub-expressions (i.e.,
@@ -27,13 +26,35 @@ top-down). Care is taken to ensure that for each unique `Expr` object only a
 constant number of other `Expr` are constructed, and an `Expr` object is not
 processed more than once.
 
-For a `jit_call` operation, the VJP computation is pushed under the
+For a `JIT_CALL` operation, the VJP computation is pushed under the
 `jit`. For example, considering a `Function` with two inputs `x1` ans `x2`,
 and an invocation `func a1 a2`, where `a1` and `a2` are the actual argument
 `Value`s. We first produce another `jit_call` that computes the value and the
 VJP of `func`: takes as arguments `a1`, `a2`, and also the adjoint of the outputs,
 and returns the adjoints for the inputs: `x1_adj` and `x2_adj`.
 , i.e., returns three values when evaluated `a1` and `a2`.
+
+For a `COND_GE` we evaluate the VJP of the branches. Given the a conditional:
+
+```
+    if pred:
+      out = true_func(true_arg)
+    else:
+      out = false_func(false_arg)
+```
+where `true_func`, `false_func` are parameters, and `[pred, true_arg, false_arg]`
+are arguments. We compute the input adjoints (for the 3 arguments in order)
+as follows:
+```
+    if pred:
+      input_adj = 0, true_func_vjp(true_arg, out_adj), 0
+    else:
+      input_adj = 0, 0, false_func_vjp(false_arg, out_adj)
+```
+Note that we pad the values returned by the branch `vjp` functions with
+zeros for the inputs not used by a particular branch.
+
+Concrete examples are in `tests/mini_jax_grad_test.py`.
 """
 from __future__ import absolute_import
 from __future__ import division
@@ -169,7 +190,7 @@ class Grad(object):
       old_adj[e.params["idx"]] += out_adj
 
     elif e.operator == Operator.JIT_CALL:
-      # The GRAD calculation has to go under JIT
+      """See comments at top of file."""
       func = e.params['func']
       vjp_func = Grad._prepare_function_vjp(func)
       if not isinstance(out_adj, (tuple, list)):
@@ -183,22 +204,7 @@ class Grad(object):
         add_adjoint(a, a_adj)
 
     elif e.operator == Operator.COND_GE:
-      """Given the a conditional:
-      
-          if pred:
-            out = true_func(true_arg)
-          else:
-            out = false_func(false_arg)
-      
-      (true_func, false_func are parameters, and [pred, true_arg, false_arg]
-      are arguments). We compute the input adjoints (for the 3 arguments 
-      in order) as follows:
-      
-          if pred:
-            input_adj = 0, true_func_vjp(true_arg, out_adj), 0
-          else:
-            input_adj = 0, 0, false_func_vjp(false_arg, out_adj)    
-      """
+      """See comments at top of file."""
       true_func_f = e.params["true_func"]
       true_func_vjp = Grad._prepare_function_vjp(true_func_f)
       false_func_f = e.params["false_func"]
