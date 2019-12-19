@@ -132,7 +132,7 @@ class Jvp(object):
       false_func_f = e.params["false_func"]
       false_func_jvp = false_func_f.trace_evaluator(
         Jvp._eval_jvp_func,
-        extra_args_typ=[inv.etype for inv in true_func_f.invars])
+        extra_args_typ=[inv.etype for inv in false_func_f.invars])
       res_with_tan = Expr.eval_std_operator(
         Operator.COND_GE,
         dict(true_func=true_func_jvp,

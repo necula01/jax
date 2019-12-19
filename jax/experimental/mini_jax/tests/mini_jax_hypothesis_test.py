@@ -93,38 +93,38 @@ class MiniJaxWrapper(object):
   def __init__(self, verbose_trace=False, variant="fake"):
     self.verbose_trace = verbose_trace
     self.variant = variant
-    self.indent_level = 0
-    self.counter = 0
+    self.stack = [0]  # Identify the calls as a stack, each element is a number
 
   def header(self):
-    return " " * self.indent_level + self.variant + ":"
+    return "{} {}:".format(self.variant,
+                           ".".join([str(count) for count in self.stack]))
+
+  def enter_call(self, method_name: str, msg: str):
+    self.stack[-1] += 1
+    if self.verbose_trace:
+      print("{} {} {}".format(self.header(), method_name, msg))
+    self.stack.append(0)
+
+  def exit_call(self, method_name: str, msg: str):
+    self.stack.pop()
+    if self.verbose_trace:
+      print("{} {} {}".format(self.header(), method_name, msg))
+
   def make_global_dict(self):
     """Make global dict for exec"""
 
     def wrapped_cond_ge(*args):
-      counter = self.counter
-      self.counter += 1
-      if self.verbose_trace:
-        print("{} cond_ge({}) pred={}".format(self.header(), counter, args[0]))
-      self.indent_level += 1
+      self.enter_call("cond_ge", "pred={}".format(args[0]))
       res = self.cond_ge(*args)
-      if self.verbose_trace:
-        print("{} cond_ge({}) res={}".format(self.header(), counter, res))
-      self.indent_level -= 1
+      self.exit_call("cond_ge", "res={}".format(res))
       return res
 
     def wrapped_transformer_method(method_name, transformer):
       """Func is a transformer Callable->Callable"""
       def doit(transformed, *args):
-        counter = self.counter
-        self.counter += 1
-        if self.verbose_trace:
-          print("{} enter {}({}) args={}".format(self.header(), method_name, counter, args))
-        self.indent_level += 1
+        self.enter_call(method_name, "args={}".format(args))
         res = transformed(*args)
-        if self.verbose_trace:
-          print("{} exit {}({}) res={}".format(self.header(), method_name, counter, res))
-        self.indent_level -= 1
+        self.exit_call(method_name, "res={}".format(res))
         return res
 
       if self.verbose_trace:
@@ -149,6 +149,7 @@ class FakeMiniJax(MiniJaxWrapper):
   def __init__(self, verbose_trace=False):
     super(FakeMiniJax, self).__init__(verbose_trace=verbose_trace,
                                       variant="fake")
+    self.differentiation_level = 0  # How many levels of numerical differentiation we are under
 
   def cond_ge(self, pred, true_func, true_ops, false_func, false_ops):
     if pred >= 0.:
@@ -168,23 +169,13 @@ class FakeMiniJax(MiniJaxWrapper):
       args = args_with_tangents[0:nr_orig_vars]
       args_tan = args_with_tangents[nr_orig_vars:]
 
-      # When we do higher-order differentiation, the arg_tan would be very small
-      # We scale them to be around 1e-5
-      non_zero_args_tan = [a_tan for a_tan in args_tan
-                           if not np.isclose(0., a_tan, atol=1e-9)]
-      if not non_zero_args_tan:
-        EPS = 1e-5
-        tangent_tolerance = 1e-2  # For the output tangents
-      else:
-        min_abs = np.linalg.norm(non_zero_args_tan, ord=-np.inf)
-        max_abs = np.linalg.norm(non_zero_args_tan, ord=np.inf)
-        if max_abs / min_abs > 1e9:
-          # Range is too high
-          msg = "Tangent ranges too high (min={}, max={})"
-          raise NumericalDifferentiationError(msg.format(min_abs, max_abs))
-        EPS = 1e-5 / min_abs
-        tangent_tolerance = min_abs / 100.
-      rounding_digits = - int(np.floor(np.log10(tangent_tolerance)))
+      self.differentiation_level += 1
+      if self.differentiation_level >= 3:
+        msg = "Differentiation too deep (level {})"
+        raise NumericalDifferentiationError(msg.format(self.differentiation_level))
+      EPS = 1e-3 ** self.differentiation_level
+      rounding_digits = 3 * self.differentiation_level - 1
+      tangent_tolerance = 1e-3 ** (self.differentiation_level - 1)
 
       res_0 = func(*args)  # The base value
       is_tuple = isinstance(res_0, tuple)
@@ -208,6 +199,7 @@ class FakeMiniJax(MiniJaxWrapper):
         msg = "Tangent discontinuity ({} and {})"
         raise NumericalDifferentiationError(msg.format(tan_m1, tan_1))
 
+      self.differentiation_level -= 1
       if is_tuple:
         return tuple(itertools.chain(res_0, tan_1))
       else:
@@ -352,11 +344,21 @@ print("{} result = {} y_tan={}".format(variant, _result, y_tan))
     def func(x):
       return 2. * x
 
-    y, y_tan = fake_mj["jvp"](func)(1., 1.5e-5)
+    y, y_tan = fake_mj["jvp"](func)(1., 1.5e-2)
 
     # y_tan should be 4, but may be a bit below or above
-    self.assertEqual(3.e-5, y_tan)  # Must be rounded to exactly 2e-5.
+    self.assertEqual(3.e-2, y_tan)  # Must be rounded to exactly 2e-5.
 
+  def test_second_degree(self):
+    fake_mj = FakeMiniJax().make_global_dict()
+    def f1(v2):
+      def f3(v5):
+        return v5
+      _, v11 = fake_mj["jvp"](f3)(0.0, v2)
+      return v11
+
+    v20 = fake_mj["grad"](f1)(2.)
+    self.assertEqual(1., v20)
 
 ###
 class Environment(object):
@@ -673,30 +675,8 @@ class JaxGenTest(jtu.JaxTestCase):
 
   def test_repro(self):
     """Bug found with hypothesis."""
-    raise self.skipTest("temporarily")
+    raise self.skipTest("Reserve test for Hypothesis repro")
     code = """
-def f1(v2):
-  def f3(v4, v5):
-    v6 = v5
-    v7 = 0.0 + 0.0
-    return sum(v7, v6)
-  def f8(v9):
-    v10, v11 = jvp(f3)(0.0, 0.0, 0.0, v9)
-    v12 = 0.0 + 0.0
-    v13 = 0.0 + 0.0
-    return sum(v13, v12, v11, v10)
-  v14 = f8(v2)
-  v15 = f3(v14, v14)
-  return sum(v14, v15)
-def f16(v17):
-  v18 = 0.0
-  v19 = 0.0
-  return sum(v19, v18)
-v0 = cond_ge(0.0, f1, (1.0,), f16, (0.0,))
-v20 = grad(f1)(v0)
-v21 = f16(0.0)
-v22 = f1(v21)
-_result = sum(v20, v0, v21, v22)
 """
     check_code_example(code, verbose_trace=True)
 

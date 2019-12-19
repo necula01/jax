@@ -228,7 +228,7 @@ class Grad(object):
                     args_v[1 + len(true_func_f.invars):] + out_adj)
       args_adj = Expr.eval_std_operator(Operator.COND_GE,
                                         dict(true_func=true_func_vjp_expanded,
-                                                false_func=false_func_vjp_expanded),
+                                             false_func=false_func_vjp_expanded),
                                         args_vjp_v)
       assert len(args_adj) == len(e.args) - 1
       add_adjoint(e.args[0], 0.)  # The predicate arguments

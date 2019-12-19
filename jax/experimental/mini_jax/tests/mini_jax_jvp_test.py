@@ -303,6 +303,66 @@ class JvpTest(jtu.JaxTestCase):
   in (n7 n8,)}
       """, str(mj.trace(mj.jvp(func))(5., 1.).pp()))
 
+  def test_jvp_cond_different_arity(self):
+    """The conditional branches have different arity."""
+    def func(x1):
+      z = x1 * 2.
+      return mj.Ops.cond_ge(x1,
+                            lambda tv0, tv1: z + tv0 + tv1 + x1 * 3., (x1 * 4., x1),
+                            lambda fv: z + fv + x1 * 13., (x1 * 14.,))
+
+    def func_equiv(x1):
+      if x1 * 2. >= 0.:
+        return x1 * 2. + x1 * 5. + x1 * 3.
+      else:
+        return x1 * 2. + x1 * 14. + x1 * 13.
+
+    self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
+    self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
+    self.assertAllClose((func_equiv(5.), 2. + 5. + 3.),
+                        mj.jvp(func)(5., 1.),
+                        check_dtypes=True)
+    self.assertAllClose((func_equiv(-5.), 2. + 14. + 13.),
+                        mj.jvp(func)(-5., 1.),
+                        check_dtypes=True)
+    self.assertMultiLineStrippedEqual("""
+{lambda v0 v1.
+  # v0: float, v1: float
+  n0 = mul v0 4.0
+  n1 = mul v0 2.0
+  n2 = mul v1 4.0
+  n3 = mul v1 2.0
+  n4 = mul v0 14.0
+  n5 = mul v1 14.0
+  n6 = cond_ge[ false_args=('n4', 'n1', v0, 'n5', 'n3', v1)
+                false_func={lambda v16 v17 v18 v19 v20 v21.
+                             # v16: float, v17: float, v18: float, v19: float, v20: float, v21: float
+                             n0 = add v17 v16
+                             n1 = mul v18 13.0
+                             n2 = add n0 n1
+                             n3 = add v20 v19
+                             n4 = mul v21 13.0
+                             n5 = add n3 n4
+                             in (n2 n5,)}
+                pred_arg=v0
+                true_args=('n0', v0, 'n1', v0, 'n2', v1, 'n3', v1)
+                true_func={lambda v8 v9 v10 v11 v12 v13 v14 v15.
+                            # v8: float, v9: float, v10: float, v11: float, v12: float, v13: float, v14: float, v15: float
+                            n0 = add v10 v8
+                            n1 = add n0 v9
+                            n2 = mul v11 3.0
+                            n3 = add n1 n2
+                            n4 = add v14 v12
+                            n5 = add n4 v13
+                            n6 = mul v15 3.0
+                            n7 = add n5 n6
+                            in (n3 n7,)} ] 
+  n7 = proj[ idx=0 ] n6
+  n8 = proj[ idx=1 ] n6
+  in (n7 n8,)}
+      """, str(mj.trace(mj.jvp(func))(5., 1.).pp()))
+
+
   def test_jvp_cond_0(self):
     def func(x):
       return mj.Ops.cond_ge(x, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
