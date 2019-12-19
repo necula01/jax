@@ -299,23 +299,26 @@ class MiniJaxTest(jtu.JaxTestCase):
       else:
         return x1 * 2. + x1 * 14. + x1 * 13.
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 4.0
-      n1 = mul v0 2.0
-      n2 = mul v0 14.0
-      n3 = cond_ge[ false_func={lambda v3 v4 v0.
-                                 # v3: float, v4: float, v0: float
-                                 n0 = mul v0 13.0
-                                 n1 = add v4 n0
-                                 in n1}
-                    true_func={lambda v1 v2 v0.
-                                # v1: float, v2: float, v0: float
-                                n0 = add v2 v1
-                                n1 = mul v0 3.0
-                                n2 = add n0 n1
-                                in n2} ] v0 n0 n1 v0 n2 n1 v0
-      in n3}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 4.0
+  n1 = mul v0 2.0
+  n2 = mul v0 14.0
+  n3 = cond_ge[ false_args=('n2', 'n1', v0)
+                false_func={lambda v3 v4 v0.
+                             # v3: float, v4: float, v0: float
+                             n0 = mul v0 13.0
+                             n1 = add v4 n0
+                             in n1}
+                pred_arg=v0
+                true_args=('n0', 'n1', v0)
+                true_func={lambda v1 v2 v0.
+                            # v1: float, v2: float, v0: float
+                            n0 = add v2 v1
+                            n1 = mul v0 3.0
+                            n2 = add n0 n1
+                            in n2} ] 
+  in n3}
       """, str(mj.trace(func)(3.).pp()))
 
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
@@ -426,12 +429,10 @@ class ComparativeJaxTest(jtu.JaxTestCase):
   def test_grad_concrete_cond(self):
     """Gradient with concrete control-flow and cond"""
     def func(x1, y1):
-      if x1 >= 0:
-        return lax.cond(True, y1, lambda tv: tv * 2., y1, lambda fv: fv * 3.)
-      else:
-        return x1 + y1
+      return lax.cond(x1 >= 0, y1, lambda tv: tv * 2., y1, lambda fv: fv * 3.)
 
     with self.assertRaisesRegex(
         NotImplementedError,
         "Forward-mode differentiation rule for 'cond' not implemented"):
-      api.grad(func)(3., 4.)
+      api.grad(func, argnums=(0, 1))(3., 4.)
+

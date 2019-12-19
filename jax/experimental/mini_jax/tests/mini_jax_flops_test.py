@@ -91,18 +91,21 @@ class FlopsTest(jtu.JaxTestCase):
                         )
 
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 2.0
-      n1 = cond_ge[ false_func={lambda v2.
-                                 # v2: float
-                                 n0 = mul v2 v2
-                                 in n0}
-                    true_func={lambda v1.
-                                # v1: float
-                                n0 = add v1 v1
-                                in n0} ] v0 v0 n0
-      in n1}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = cond_ge[ false_args=('n0',)
+                false_func={lambda v2.
+                             # v2: float
+                             n0 = mul v2 v2
+                             in n0}
+                pred_arg=v0
+                true_args=(v0,)
+                true_func={lambda v1.
+                            # v1: float
+                            n0 = add v1 v1
+                            in n0} ] 
+  in n1}
     """, str(mj.trace(func)(3.).pp()))
 
     self.assertAllClose(3., mj.count_flops(func)(3.),
@@ -118,34 +121,40 @@ class FlopsTest(jtu.JaxTestCase):
                         )
 
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 2.0
-      n1 = cond_ge[ false_func={lambda v2.
-                                 # v2: float
-                                 n0 = mul v2 v2
-                                 n1 = mul n0 v2
-                                 in n1}
-                    true_func={lambda v1.
-                                # v1: float
-                                n0 = add v1 v1
-                                in n0} ] v0 v0 n0
-      in n1}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = cond_ge[ false_args=('n0',)
+                false_func={lambda v2.
+                             # v2: float
+                             n0 = mul v2 v2
+                             n1 = mul n0 v2
+                             in n1}
+                pred_arg=v0
+                true_args=(v0,)
+                true_func={lambda v1.
+                            # v1: float
+                            n0 = add v1 v1
+                            in n0} ] 
+  in n1}
     """, str(mj.trace(func)(3.).pp()))
 
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 2.0
-      n1 = cond_ge[ false_func={lambda v5.
-                                 # v5: float
-                                 in 2.0}
-                    true_func={lambda v4.
-                                # v4: float
-                                in 1.0} ] v0 v0 n0
-      n2 = add 1.0 n1
-      n3 = add 1.0 n2
-      in n3}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = cond_ge[ false_args=('n0',)
+                false_func={lambda v5.
+                             # v5: float
+                             in 2.0}
+                pred_arg=v0
+                true_args=(v0,)
+                true_func={lambda v4.
+                            # v4: float
+                            in 1.0} ] 
+  n2 = add 1.0 n1
+  n3 = add 1.0 n2
+  in n3}
     """, str(mj.trace(mj.count_flops(func))(3.).pp()))
 
     self.assertAllClose(3., mj.count_flops(func)(3.),
@@ -208,66 +217,78 @@ class FlopsTest(jtu.JaxTestCase):
               )
 
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 2.0
-      n1 = jit_call[ func={lambda v1.
-                            # v1: float
-                            n0 = mul v1 2.0
-                            n1 = cond_ge[ false_func={lambda v3.
-                                                       # v3: float
-                                                       n0 = mul v3 v3
-                                                       n1 = mul n0 v3
-                                                       in n1}
-                                          true_func={lambda v2.
-                                                      # v2: float
-                                                      n0 = add v2 v2
-                                                      in n0} ] v1 v1 n0
-                            in n1} ] n0
-      n2 = mul n0 2.0
-      n3 = cond_ge[ false_func={lambda v5.
-                                 # v5: float
-                                 n0 = mul v5 v5
-                                 n1 = mul n0 v5
-                                 in n1}
-                    true_func={lambda v4.
-                                # v4: float
-                                n0 = add v4 v4
-                                in n0} ] n0 n0 n2
-      n4 = add n1 n3
-      in n4}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = mul v1 2.0
+                        n1 = cond_ge[ false_args=('n0',)
+                                      false_func={lambda v3.
+                                                   # v3: float
+                                                   n0 = mul v3 v3
+                                                   n1 = mul n0 v3
+                                                   in n1}
+                                      pred_arg=v1
+                                      true_args=(v1,)
+                                      true_func={lambda v2.
+                                                  # v2: float
+                                                  n0 = add v2 v2
+                                                  in n0} ] 
+                        in n1} ] n0
+  n2 = mul n0 2.0
+  n3 = cond_ge[ false_args=('n2',)
+                false_func={lambda v5.
+                             # v5: float
+                             n0 = mul v5 v5
+                             n1 = mul n0 v5
+                             in n1}
+                pred_arg=n0
+                true_args=('n0',)
+                true_func={lambda v4.
+                            # v4: float
+                            n0 = add v4 v4
+                            in n0} ] 
+  n4 = add n1 n3
+  in n4}
     """, str(mj.trace(func)(3.).pp()))
 
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 2.0
-      n1 = jit_call[ func={lambda v7.
-                            # v7: float
-                            n0 = mul v7 2.0
-                            n1 = cond_ge[ false_func={lambda v9.
-                                                       # v9: float
-                                                       in 2.0}
-                                          true_func={lambda v8.
-                                                      # v8: float
-                                                      in 1.0} ] v7 v7 n0
-                            n2 = add 1.0 n1
-                            n3 = add 1.0 n2
-                            in n3} ] n0
-      n2 = add 2.0 n1
-      n3 = add 1.0 n2
-      n4 = add n3 1.0
-      n5 = mul n0 2.0
-      n6 = cond_ge[ false_func={lambda v11.
-                                 # v11: float
-                                 in 2.0}
-                    true_func={lambda v10.
-                                # v10: float
-                                in 1.0} ] n0 n0 n5
-      n7 = add 1.0 n6
-      n8 = add n4 n7
-      n9 = add n8 1.0
-      in n9}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = jit_call[ func={lambda v7.
+                        # v7: float
+                        n0 = mul v7 2.0
+                        n1 = cond_ge[ false_args=('n0',)
+                                      false_func={lambda v9.
+                                                   # v9: float
+                                                   in 2.0}
+                                      pred_arg=v7
+                                      true_args=(v7,)
+                                      true_func={lambda v8.
+                                                  # v8: float
+                                                  in 1.0} ] 
+                        n2 = add 1.0 n1
+                        n3 = add 1.0 n2
+                        in n3} ] n0
+  n2 = add 2.0 n1
+  n3 = add 1.0 n2
+  n4 = add n3 1.0
+  n5 = mul n0 2.0
+  n6 = cond_ge[ false_args=('n5',)
+                false_func={lambda v11.
+                             # v11: float
+                             in 2.0}
+                pred_arg=n0
+                true_args=('n0',)
+                true_func={lambda v10.
+                            # v10: float
+                            in 1.0} ] 
+  n7 = add 1.0 n6
+  n8 = add n4 n7
+  n9 = add n8 1.0
+  in n9}
     """, str(mj.trace(mj.count_flops(func))(3.).pp()))
     self.assertAllClose(10., mj.count_flops(func)(3.),
                        check_dtypes=True)

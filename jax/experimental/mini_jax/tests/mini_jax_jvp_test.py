@@ -258,7 +258,8 @@ class JvpTest(jtu.JaxTestCase):
   n3 = mul v1 2.0
   n4 = mul v0 14.0
   n5 = mul v1 14.0
-  n6 = cond_ge[ false_func={lambda v13 v14 v15 v16 v17 v18.
+  n6 = cond_ge[ false_args=('n4', 'n1', v0, 'n5', 'n3', v1)
+                false_func={lambda v13 v14 v15 v16 v17 v18.
                              # v13: float, v14: float, v15: float, v16: float, v17: float, v18: float
                              n0 = add v14 v13
                              n1 = mul v15 13.0
@@ -267,6 +268,8 @@ class JvpTest(jtu.JaxTestCase):
                              n4 = mul v18 13.0
                              n5 = add n3 n4
                              in (n2 n5,)}
+                pred_arg=v0
+                true_args=('n0', 'n1', v0, 'n2', 'n3', v1)
                 true_func={lambda v7 v8 v9 v10 v11 v12.
                             # v7: float, v8: float, v9: float, v10: float, v11: float, v12: float
                             n0 = add v8 v7
@@ -275,7 +278,7 @@ class JvpTest(jtu.JaxTestCase):
                             n3 = add v11 v10
                             n4 = mul v12 3.0
                             n5 = add n3 n4
-                            in (n2 n5,)} ] v0 n0 n1 v0 n2 n3 v1 n4 n1 v0 n5 n3 v1
+                            in (n2 n5,)} ] 
   n7 = proj[ idx=0 ] n6
   n8 = proj[ idx=1 ] n6
   in (n7 n8,)}

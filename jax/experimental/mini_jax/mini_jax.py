@@ -95,6 +95,12 @@ class Operator(enum.Enum):
     1 argument representing the value to be compared
     `len(func_true.invars)` arguments to be passed to the `true_func`
     `len(fund_false.invars)` arguments to be passed to the `false_func`.
+    
+  When pretty-printing, the arguments are actually shown as part of 
+  parameters:
+    pred_arg:
+    true_args: arguments to be passed to the `true_func`
+    false_args: arguments to be passed to the `false_func`
   """
 
   PROJECTION = "proj"
@@ -296,9 +302,18 @@ class Expr(object):
 
     def pp_binding(binding: Tuple[str, Expr]):
       name, e = binding
-      pp_args = pp_str(" ".join(map_list(str, e.args)))
+      # Special case the printing of some operators
+      args, params = e.args, e.params
+      if e.operator == Operator.COND_GE:
+        # Put the true_args and false_args among parameters, make it easier to read
+        params = dict(**params)
+        params["pred_arg"] = args[0]
+        params["true_args"] = args[1:1+len(params["true_func"].invars)]
+        params["false_args"] = args[1 + len(params["true_func"].invars):]
+        args = []
+      pp_args = pp_str(" ".join(map_list(str, args)))
       return (pp_str("{} = {}".format(name, e.operator)) >>
-              pp_kv_pairs(sorted(e.params.items())) >>
+              pp_kv_pairs(sorted(params.items())) >>
               pp_str(" ") >> pp_args)
 
     if len(names) > 1:
@@ -307,6 +322,7 @@ class Expr(object):
       result = pp_str("in {}".format(names[0]))
     return (pp_list(map_list(pp_binding, bindings), vertical=True) +
             result)
+
 
 
 class Function(object):

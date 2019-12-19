@@ -291,37 +291,40 @@ class GradTest(jtu.JaxTestCase):
                         mj.grad(func)(-5.),
                         check_dtypes=True)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = mul v0 4.0
-      n1 = mul v0 2.0
-      n2 = mul v0 14.0
-      n3 = cond_ge[ false_func={lambda v10 v11 v12 v13.
-                                 # v10: float, v11: float, v12: float, v13: float
-                                 n0 = mul v13 13.0
-                                 in (0.0 0.0 0.0 v13 v13 n0,)}
-                    true_func={lambda v6 v7 v8 v9.
-                                # v6: float, v7: float, v8: float, v9: float
-                                n0 = mul v9 3.0
-                                in (v9 v9 n0 0.0 0.0 0.0,)} ] v0 n0 n1 v0 1.0 n2 n1 v0 1.0
-      n4 = proj[ idx=2 ] n3
-      n5 = proj[ idx=5 ] n3
-      n6 = add n4 n5
-      n7 = proj[ idx=0 ] n3
-      n8 = mul n7 4.0
-      n9 = add n6 n8
-      n10 = proj[ idx=1 ] n3
-      n11 = proj[ idx=4 ] n3
-      n12 = add n10 n11
-      n13 = mul n12 2.0
-      n14 = add n9 n13
-      n15 = proj[ idx=3 ] n3
-      n16 = mul n15 14.0
-      n17 = add n14 n16
-      in n17}
+{lambda v0.
+  # v0: float
+  n0 = mul v0 4.0
+  n1 = mul v0 2.0
+  n2 = mul v0 14.0
+  n3 = cond_ge[ false_args=('n2', 'n1', v0, 1.0)
+                false_func={lambda v10 v11 v12 v13.
+                             # v10: float, v11: float, v12: float, v13: float
+                             n0 = mul v13 13.0
+                             in (0.0 0.0 0.0 v13 v13 n0,)}
+                pred_arg=v0
+                true_args=('n0', 'n1', v0, 1.0)
+                true_func={lambda v6 v7 v8 v9.
+                            # v6: float, v7: float, v8: float, v9: float
+                            n0 = mul v9 3.0
+                            in (v9 v9 n0 0.0 0.0 0.0,)} ] 
+  n4 = proj[ idx=2 ] n3
+  n5 = proj[ idx=5 ] n3
+  n6 = add n4 n5
+  n7 = proj[ idx=0 ] n3
+  n8 = mul n7 4.0
+  n9 = add n6 n8
+  n10 = proj[ idx=1 ] n3
+  n11 = proj[ idx=4 ] n3
+  n12 = add n10 n11
+  n13 = mul n12 2.0
+  n14 = add n9 n13
+  n15 = proj[ idx=3 ] n3
+  n16 = mul n15 14.0
+  n17 = add n14 n16
+  in n17}
       """, str(mj.trace(mj.grad(func))(5.).pp()))
 
-  def test_cond_grad_shared_body(self):
+  def test_grad_shared_body(self):
     def func(x):
       def f5(y):
         # We use the same body twice, we have to count the adjoints from each

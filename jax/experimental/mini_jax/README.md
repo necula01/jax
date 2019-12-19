@@ -52,18 +52,16 @@ and optimizations have been simplified or omitted:
 ## Highlights and lessons learned
 
 The goal was to implement mini-JAX as simply as possible, but not simpler! It is
-easy to end up with an implementation that is too simple. I decided to write up
-some of the things that I think may be surprising. 
-These lessons are meant to be relevant to both 
+easy to end up with an implementation that is too simple. Here are some of the 
+things that are non-obvious. These lessons are meant to be relevant to both 
 mini-JAX and JAX, but are perhaps easier to understand from the mini-JAX code. 
 
 ### Introduction to JAX tracing
 
 Assume that we want to code up a transformation such that given a 
 Python function `traceable_func`, then `jvp(traceable_func, arg, arg_tan)` 
-evaluates the perturbation (tangent) of the result of `traceable_func` evaluated at 
-input `arg` given a perturbation of the input `arg_tan` 
-(this is called a Jacobian-vector product). For example:
+evaluates the perturbation of the result of `traceable_func` evaluated at 
+input `arg` given a perturbation of the input `arg_tan`. For example:
 ```
    def func0(x):
      return x * x
@@ -77,23 +75,22 @@ are performed online, during tracing, and no JAXPR is materialized.)
 For simplicity, in this write-up (and in mini-JAX) we will not use specific details of
 how JAXPR are implemented and are going to simply use symbolic expressions
 `Expr` with constructs such as `Var(v)` (for variables, where `v` is some
-internal unique identifier), `Literal(3.0)`, `Add(e1, e2)`, etc. We will 
-also often write them even more simply using Python operators: `e1 + e2`.
-For specific details on JAXPRs, see "Understanding JAXPR" writeup. 
+internal unique identifier), `Literal(3.0)`, `Add(e1, e2)`, etc. For specific
+details in JAXPRs, see "Understanding JAXPR" writeup. 
 
 To obtain the symbolic expression for the function to be transformed,
 JAX does not try to parse the source code of the function.
 Instead, it executes the function using special tracer objects as arguments. 
-A tracer object has a type and a symbolic expression that denotes the 
+A tracer object has a type, and a symbolic expression that denotes the 
 current value of the tracer. The tracer object also overloads
 Python operators such that it gets notified when the Python interpreter
 tries to use the tracer object in an operation. The tracer implementation of 
 operators builds symbolic expressions corresponding to the computation and
-returns tracers. 
+return tracers. 
 
 A pseudo-code for how the tracing is invoked is roughly:
 ```
-  arg_typ: ExprType = type_of_val(arg)    # Abstract the 'arg' to its type, e.g., 'float', or 'float[3,4]'   
+  arg_typ: ExprType = type_of_val(arg)    # Abstract 'arg' to type, e.g., 'float', or 'float[3,4]'   
   in_t: Tracer = new_var_tracer(arg_typ)  # Create a tracer initialized to a Var expression 
 ``` 
 Now we simply let the Python interpreter execute the user function: 
@@ -103,19 +100,20 @@ Now we simply let the Python interpreter execute the user function:
 The result `primal_res_t.expr` is a symbolic representation of the computation that was performed
 on tracers by the user function. For a user function to be adequate for such tracing it must: 
 
-* use the arguments only with a designated set of operators that
-  have been overloaded. In mini-JAX, these are `+`, `-`, `*`, `**` with integer 
+* use the arguments only with a designated set of operators (that
+  have been overloaded.) In mini-JAX, this are `+`, `-`, `*`, `**` with integer 
   exponent. JAX has a much richer set of primitive operations, and the `numpy`
   API has been implemented in terms of these primitive operations.   
-  An example of inappropriate operations for tracers are library functions such as
+  An example of inappropriate operations are library functions such as
   `copy` or `pickle`, or Python conditional constructs. 
-* the result of the traceable function should be returned through the function return value, 
+* the result of the function should be returned through the function return value, 
   not through global state. The function can store values in mutable state 
   internally, but those values should not be used after the function returns, 
   and the result should be returned through the return value. 
 
-Normally, JAX traces through Python control flow and function calls. 
-For example, when tracing the function `func1` below::
+Normally, JAX
+traces through Python control flow and function calls. For example, when tracing 
+the function `func1` below::
 ```
   def func1(x):
     z = x * 2
@@ -125,8 +123,8 @@ For example, when tracing the function `func1` below::
 ```    
 the resulting JAXPR is essentially `x * 3 + x * 4 + x * 2` (tracers are passed
 transparently through variable assignments, function calls, and lexical closures). 
-In particular, in this form of tracing, all the function calls are inlined. 
-Loops and control flow are also inlined:
+In particular, in this form of tracing, all the function calls are inlined. Loops and
+control flow are also inlined:
 ```
   def func1(x):
     for i in range(4):
@@ -141,11 +139,10 @@ The above function traces to `(((x * 2) * 3) * 2) * 3`.
 ### Composable transformations through traceable interpreters
 
 Once we have the symbolic expression for a function to be transformed, one
-can think of writing transformations as expression transformers. This 
-requires each transformer to be building expressions, and then we need to 
+can think of writing transformations as a expression transformer. This 
+requires each transformed to be building expressions, and then we need to 
 evaluate the resulting expressions. Instead, JAX fuses the transformation 
-with the evaluation, and performs all transformations using custom evaluators
-or interpreters. 
+with the evaluation, and performs all transformations using custom evaluators. 
 
 The simplest evaluator is the standard evaluator, that computes the value
 of the symbolic expression given values for the variables:
@@ -172,14 +169,14 @@ environment with the input tangents:
 
 Often during non-standard evaluation we also need the standard value of
 a sub-expression. In `eval_jvp` this will be needed when evaluating the tangent
-of a multiplication: we need to use the tangents of the operands and also 
+of a multiplication; we need to use the tangents of the operands and also 
 their standard values. For this purpose we also set up a standard environment
-which we'll use with a standard evaluator:
+which we'll use with the standard evaluator:
 ```
   std_env = {in_t.expr: arg}
 ```
 
-Then we write the `eval_jvp` interpreter:
+Then we write the `eval_jvp` function:
 ```
     def eval_jvp(e: Expr, tan_env, std_env):
         if e is Var:
@@ -198,7 +195,7 @@ Then we write the `eval_jvp` interpreter:
 Returning to our `func0` example, after the tracing of the body of `func0`
 we obtain the symbolic expression `func0_e = Mul(Var(v), Var(v))`. 
 To evaluate the tangent at point `arg = 3` we use a value `arg_tan = 1`,
-i.e., `jvp(func0, 3, 1)`. This leads to the call
+i.e., `jvp(func0)(3, 1)`. This leads to the call
 `eval_jvp(func0_e, {Var(v): 1}, {Var(v): 3})` and we should get the result `6`.
 Importantly, the `+` and `*` operations in `eval_jvp` will operate 
 on naked Python values and will be performed directly by the interpreter. 
@@ -236,10 +233,7 @@ point a nested tracing process starts, a new tracing variable is created for
 ``` 
 
 Note that in the first invocation of `eval_jvp(res0.expr)` some values are tracers, so 
-the result is a tracer. **The same `eval_jvp` that can give us the concrete 
-result values when the inputs are concrete values, gives us automatically
-tracers for the results when at least one of the inputs is a tracer.** 
-In the second invocation `eval_jvp(res1_t.expr)` all values
+the result is a tracer. In the second invocation `eval_jvp(res1_t.expr)` all values
 are constants, so the `+` and `*` were executed directly by the Python interpreter
 and the result is the Python constant `2`.
 
@@ -248,48 +242,41 @@ must be traceable themselves: they must be functional and use their arguments
 only with supported primitives. If you follow this rule, then you can write
 new transformations that compose nicely with the other ones.  
 
-### Many Python numerical codes contain statically-well-typed computations waiting to come out
+### Many Python numerical contain statically-well-typed computations waiting to come out
 
-The classic slogan "well-typed programs don't go wrong" comes in very handy here.
+The classic adage "well-typed programs don't go wrong" comes in very handy here.
 We would like to have a static type system for our symbolic expressions such 
-that (1) the output of tracing is a well-typed expression, and (2) a well-typed 
+that (1) the output of tracing is a well-typed expression, (2) a well-typed 
 expression can be evaluated without error, can be JIT-compiled and executed
-without error, and can be transformed without errors into other 
-well-typed expressions.
+without error, and can be transformed without errors into well-typed expressions.
 Here, by "error" we mean some internal errors in the JAX transformation and
 compilation machinery,
 excluding data-dependent run-time errors such as division-by-zero. 
 
 The reason why this type safety property is very useful is that we want to 
-surface all the JAX errors during tracing (during `traceable_user_func(in_t)`)
+give all the JAX errors during tracing (during `traceable_user_func(in_t)`)
 because that is when the Python interpreter executes user code and can 
 localize the error with precise stack traces. If instead, we allow 
 any of our standard or custom evaluators and JIT-compilers to fail, the 
-stack trace will contain only JAX internal code. (This can be mitigated somewhat
-by recording stack traces during tracing and including them as part of
-the error messages.) Another advantage is that one can use a debugger to 
-place breakpoints in the user code and can then see how that particular
-code fragment is being traced. 
+stack trace will contain only JAX internal code. 
 
 JAX's internal representation JAXPR is typed, and so is mini-JAX's internal
 `Expr` language, with types representing the shape and base type of a tensor. 
-In fact, the real JAX has a richer hierarchy of types that are called 
+In fact, the real JAX has a richer hierarchy of types that it called 
 `abstract values`. 
 
-One of the secrets of the success of JAX's tracing-based approach to transformations
+One of the secrets of the success of JAX's tracing-based approach to transformation
 is that many `numpy` numerical and ML programs
 can be easily written with Python control flow based only on array shape values. Thus
 one can trace the code with tracer values that capture the shapes to extract
-a statically-typed symbolic expression specialization of the original program,
-which can be processed a lot easier than processing untyped and complex Python
-ASTs.
+a statically-typed symbolic expression specialization of the original program.
 
 ### The need for functions in the intermediate language
 
 With the tracing described so far all Python control flow, including functions
-and conditionals, get inlined and the expression denoting a function to be
-transformed does not need to include control-flow, functions, or scopes. This 
-simple semantics makes it very easy to write transformations. 
+and conditionals get inlined and the expression denoting a function to be
+transformed does not need to have control-flow, functions, or scopes. This 
+simple semantics would make it very easy to write transformations. 
 
 In reality, JAXPRs (and mini-JAX `Expr`) have scopes and function calls, for
 several reasons. 
@@ -307,19 +294,19 @@ of `inner`.
 ```   
 Furthermore, the compilation cannot all happen during tracing because if there
 are enclosing transformations, e.g., `grad(func1)`, then the computation required
-by `grad` corresponding to the body of `inner` has to be performed in the same 
-JIT compilation scope as `jit(inner)`. 
+by `grad` has to be performed in the same JIT compilation scope as `jit(inner)`. 
 This means that upon encountering a `jit` transformation the expression 
-corresponding to the function is captured and saved as a function in the intermediate
+corresponding to the function is captured as a function in the intermediate
 language. (It is not desirable to require `jit` to always be the top-most 
 transformation, because we may want to put the `jit` in a library function, 
-while allowing the library user to request a gradient or any other computation.)
+while allowing the library user to request a gradient computation, or any
+other transformation.)
 
-The JAXPR language has functions, but is not truly higher-order, 
+The JAXPR language has functions, but is not really higher-order, 
 because functions are not first-class objects. They can only be used as 
 parameters to a few special higher-order operators (in mini-JAX: `Operator.JIT_CALL`,
-and `Operator.COND_GE`; in JAX, a larger number of similar control-flow and 
-compilation-related primitives). The functions in JAXPR are:
+and `Operator.COND_GE`; in JAX, the similar control-flow and compilation-related
+operators). The functions in JAXPR are:
 * closed (all the data they need is passed explicitly through parameters),
 * typed,
 * anonymous, and called in a single place. These conditions can be relaxed, e.g., by
@@ -330,8 +317,7 @@ In addition to JIT, in JAX the conditionals also take advantage of functions.
 Since we rely on tracing using the Python interpreter to capture the 
 symbolic expressions, we will not see regular Python control flow. Instead, 
 we ask the programmer to use a higher-order conditional construct to capture
-both branches of a conditional as functions (unless we want to 
-inline the conditional):
+both branches of a conditional as functions:
 ```
 jax.ops.cond(pred, true_arg, true_func, false_arg, false_dunc) 
 ```
@@ -348,7 +334,7 @@ conditionals, e.g., by introducing a lazy operator.
 
 The higher-order operators are the most complicated in the intermediate language. 
 For example, the `grad` and `jvp` rules for conditionals are 30 and respectively
-20 lines of (non-trivial) code, compared to two trivial lines for the arithmetic operations.    
+20 lines of code, compared to two lines for the arithmetic operations.    
 
 ### Various strategies for closure conversion during tracing
 
@@ -369,51 +355,45 @@ though the data dependencies for `x * 4` are ready before we enter the `jit`
 scope. 
 This is not a clear design requirement though, perhaps the `inner` function
 is in a library and was written without thinking about `jit`, or other
-transformations coming from the dynamic scope, and perhaps there are some 
-benefits to hoisting `x * 4` early.  
+transformations coming from the dynamic scope. 
 
-JAX and mini-JAX do different things here. JAX implements pretty aggressive constant
+JAX and mini-JAX do different things here. JAX does pretty aggressive constant
 folding, meaning that it does computations as eagerly as possible. This 
 can be viewed as an optimization, but users are also sometimes surprised
-when they see multiple JIT-compilations for sub-expressions hoisted out
-of the `jit` scope, when they 
-expected only a single JIT-compilation. There is ongoing discussion among
+when they see multiple JIT-compilations for sub-expressions, when they 
+expected only a single JIT-compilation. There is ongoing debate among
 the JAX designers how to handle this (perhaps forcing some computations
-to stay in the JIT scope in which they were written. TODO: reference new 
-PRs)
+to stay in the JIT scope in which they were written.)
 
 In mini-JAX, for simplicity, all computations have a dependency on the 
-dynamically-nearest enclosing transformation scope (not Python function scopes, 
-only transformation scopes, and all transformation,
+dynamically-nearest enclosing transformation scope (all transformation,
 not just JIT). Essentially the code above traces to 
 `xla_call (lambda y, x, z: y + x * 4 + z) (x * 3) x (x * 2)`.
 Note that the body of `inner` is kept as an anonymous function. Also, 
 the body is "closed", and is passed explicitly the *environment values* for `x`
 and `z`. The computation for `x * 4` is kept in the body. 
 
-This is not trivial to achieve. In the simplest implementation, using pure 
-data dependence perspective, 
+This is not trivial to achieve. From a pure data dependence perspective, 
 when the Python interpreter encounters `x * 4` it looks the same as if it 
 were written outside `inner`. We solve this by introducing global state
 in the tracing: each time a new transformation scope is entered, a
 global counter is incremented and when the symbolic expression for `x * 4`
-is build, it is tagged with the current scope nesting depth. When the final result 
+is build, it is tagged with the scope nesting depth. When the final result 
 of tracing `inner` is obtained, all the computations in it that belong to 
 enclosing scopes are lifted out of the function. For example, the symbolic 
-expression for `x * 2` constructed outside `inner` is encountered in the 
+expression for `x * 2` constructed outside `inner` is encounted in the 
 computation of the return value of `inner`. At that point it is replaced
 with a fresh variable, and lifted as a new parameter to `inner`. 
 This code is in `mini_jax.py:Tracer.build`. 
 
 The functional branches of conditionals are handled similarly. 
 
-TODO: one can argue that for conditionals and for JIT it is important to 
+TODO: one can argue that for conditionals and for JIT is is important to 
 keep computations dependent on the dynamic scope where they were created, 
-because this faithfully follows the intention of the code,  
-but perhaps for other computations we can follow pure data dependence
+but perhaps for other computations we can follow strict data dependence
 and allow the optimizer to lift them as needed. Perhaps one can explore 
 such a mixed strategy in mini-JAX (and JAX), but for simplicity this is not
-yet done here. 
+yet done. 
 
 ### Careful sharing in the intermediate language is important
 
@@ -450,12 +430,11 @@ expressions is worth the extra cost of being careful about preserving sharing.
    
 ### Real-JAX gives better errors can differentiate through control-flow
 
-Perhaps the most important JAX feature that is not reflected in mini-JAX
+Perhaps the most important JAX features that is not reflected in mini-JAX
 is JAX's ability to perform some transformations inline, during tracing. This 
 has the major advantages that (1) one can apply differentiation
-transformations on a program that contains data-dependent control flow 
-(and therefore would be untraceable to a symbolic expression), 
-and (2) errors in the tranformers are reported during tracing when the 
+transformations on a program that contains data-dependent control flow, 
+and (2) errors are reported during tracing when the 
 user-program's stack trace is available. JAX does
 this by carrying the actual concrete value as it traces the program, which 
 enables it to resolve control flow. There is also a minor cost advantage of 
@@ -466,7 +445,7 @@ do so are if a `jit`, or `pmap` transformation are present, or if we have
 higher-order control-flow (`cond` and `while`).
 
 TODO: fusing transformations in mini-JAX should be doable, hopefully without 
-too much complication. To be explored.   
+too much complication.  
 
 ### Efficient reverse differentiation is tricky
 
@@ -502,12 +481,12 @@ memoization things work.
 It is a rare project where 1000 lines of code can pack so much functionality,
 so much reward, and so much trickiness. This is in part due to the fact that
 tracing leverages much of the power of a Python interpreter, cleverly hijacked
-through operator overloading. Some of the trickiness comes from having to "undo"
+through operator overloading. Some of the trickiness came from having to "undo"
 some of the information lost through tracing; access to the source would have
-made some of the transformations simpler, but dealing with Python ASTs is significantly
+made some of the tasks simpler, but dealing with Python ASTs is significantly
 more involved than the intermediate form we use here.
 
-The effort to try to find the simplest correct implementation is non-trivial,
+The effort to try to find the simplest correct implementation was non-trivial,
 and is but one fraction of the cleverness that is packed into the real JAX!
 
 Code structure
