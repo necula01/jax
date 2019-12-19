@@ -165,8 +165,8 @@ def jit(func: Callable):
                                                    Tracer.val_to_type,
                                                    args))
     # If there are freevars pass them on
-    return Expr.eval_operator_tracer(Operator.JIT_CALL,
-                                     dict(func=func_f),
-                                     list(args) + func_f_env)
+    return Expr.eval_std_operator(Operator.JIT_CALL,
+                                  dict(func=func_f),
+                                  list(args) + func_f_env)
 
   return wrapped_jit

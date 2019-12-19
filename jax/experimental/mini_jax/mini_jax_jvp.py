@@ -38,9 +38,9 @@ from jax.experimental.mini_jax.mini_jax_util import map_list, unzip
 class Jvp(object):
   """Methods related to forward differentiation."""
 
-  def eval_jvp_func_tracer(func: Function,
-                           *args_and_tan: Sequence[Value]
-                           ) -> Sequence[Value]:
+  def _eval_jvp_func(func: Function,
+                     *args_and_tan: Sequence[Value]
+                     ) -> Sequence[Value]:
     """Evaluates the JVP given Values for invars followed by the corresponding
     tangents.
 
@@ -59,17 +59,17 @@ class Jvp(object):
 
     def visitor_jvp(e: Expr, args_v: Sequence[Tuple[Value, Value]]
                     ) -> Tuple[Value, Value]:
-      return Jvp._eval_jvp_expr_tracer(e, args_v, env)
+      return Jvp._eval_jvp_expr(e, args_v, env)
 
     res_and_tan = func.visit_bodies_memoized(visitor_jvp)
     res, res_tan = unzip(res_and_tan)
     return tuple(res + res_tan)
 
   @staticmethod
-  def _eval_jvp_expr_tracer(e: Expr,
-                            args_with_tan: Sequence[Tuple[Value, Value]],
-                            env: Dict[int, Tuple[Value, Value]]
-                            ) -> Tuple[Value, Value]:
+  def _eval_jvp_expr(e: Expr,
+                     args_with_tan: Sequence[Tuple[Value, Value]],
+                     env: Dict[int, Tuple[Value, Value]]
+                     ) -> Tuple[Value, Value]:
     """Evaluates the JVP of an operator application.
     Args:
       e: the expression to evaluate
@@ -110,14 +110,14 @@ class Jvp(object):
       # The JVP calculation has to also be under JIT
       func = e.params["func"]
       # For each invar we add also a tangent var, with the same ExprType
-      all_invars_et = [inv.etype for inv in func.invars] * 2
-      jvp_func = func.trace_interpreter(
-        Jvp.eval_jvp_func_tracer,
-        args_t=all_invars_et)
       args, args_tan = unzip(args_with_tan)
-      call_res = Expr.eval_operator_tracer(Operator.JIT_CALL,
-                                       dict(func=jvp_func),
-                                       args + args_tan)
+      jvp_func = func.trace_evaluator(
+        Jvp._eval_jvp_func,
+        extra_args_typ=[inv.etype for inv in func.invars])
+      call_res = Expr.eval_std_operator(Operator.JIT_CALL,
+                                        dict(func=jvp_func),
+                                        args + args_tan)
+      # Convert from (res1, res2, res1_tan, res2_tan) to ((res1, res1_tan), (res2, res2_tan))
       if len(func.bodies) > 1:
         return tuple(zip(call_res[0:len(func.bodies)], call_res[len(func.bodies):]))
       else:
@@ -126,14 +126,14 @@ class Jvp(object):
     if e.operator == Operator.COND_GE:
       args, args_tan = unzip(args_with_tan)
       true_func_f = e.params["true_func"]
-      true_func_jvp = true_func_f.trace_interpreter(
-        Jvp.eval_jvp_func_tracer,
-        args_t=[inv.etype for inv in true_func_f.invars] * 2)
+      true_func_jvp = true_func_f.trace_evaluator(
+        Jvp._eval_jvp_func,
+        extra_args_typ=[inv.etype for inv in true_func_f.invars])
       false_func_f = e.params["false_func"]
-      false_func_jvp = false_func_f.trace_interpreter(
-        Jvp.eval_jvp_func_tracer,
-        args_t=[inv.etype for inv in false_func_f.invars] * 2)
-      res_with_tan = Expr.eval_operator_tracer(
+      false_func_jvp = false_func_f.trace_evaluator(
+        Jvp._eval_jvp_func,
+        extra_args_typ=[inv.etype for inv in true_func_f.invars])
+      res_with_tan = Expr.eval_std_operator(
         Operator.COND_GE,
         dict(true_func=true_func_jvp,
              false_func=false_func_jvp),
@@ -173,6 +173,6 @@ def jvp(func: Callable) -> Callable[..., Function]:
       args_and_tangents = itertools.chain(args, func_f_env,
                                           args_and_tangents[nr_args:],
                                           [0. for c in func_f_env])
-    return Jvp.eval_jvp_func_tracer(func_f, *args_and_tangents)
+    return Jvp._eval_jvp_func(func_f, *args_and_tangents)
 
   return wrapped_jvp

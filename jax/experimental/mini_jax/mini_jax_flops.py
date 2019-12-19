@@ -55,8 +55,8 @@ class Flops(object):
   """Methods related to counting flops."""
 
   @staticmethod
-  def eval_flops_func_tracer(func: Function, *args_v: Sequence[Value]
-                             ) -> Sequence[Value]:
+  def eval_flops_func(func: Function, *args_v: Sequence[Value]
+                      ) -> Sequence[Value]:
     # Prepare an expression evaluator for when flops are data-dependent
     env = {iv.params["id"]: arg_v for iv, arg_v in zip(func.invars, args_v)}
     eval_expr = Expr.make_memoized_expr_evaluator(env)
@@ -99,8 +99,8 @@ class Flops(object):
 
     if e.operator == Operator.JIT_CALL:
       func = e.params["func"]
-      flops_func = func.trace_interpreter(
-        Flops.eval_flops_func_tracer)
+      flops_func = func.trace_evaluator(
+        Flops.eval_flops_func)
       # Perhaps the flops of the function is data-independent
       if flops_func.bodies[-1].operator == Operator.LITERAL:
         # Add in the cost of the call itself
@@ -108,18 +108,18 @@ class Flops(object):
                      flops_func.bodies[-1].params["val"])
       else:
         e_args_v = map_list(eval_expr, e.args)
-        res = Expr.eval_operator_tracer(Operator.JIT_CALL,
-                                        dict(func=flops_func),
-                                        e_args_v)
+        res = Expr.eval_std_operator(Operator.JIT_CALL,
+                                     dict(func=flops_func),
+                                     e_args_v)
         return accum(1. + float(len(func.invars)) + res)
 
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
-      true_func_flops = true_func_f.trace_interpreter(
-        Flops.eval_flops_func_tracer)
+      true_func_flops = true_func_f.trace_evaluator(
+        Flops.eval_flops_func)
       false_func_f = e.params["false_func"]
-      false_func_flops = false_func_f.trace_interpreter(
-        Flops.eval_flops_func_tracer)
+      false_func_flops = false_func_f.trace_evaluator(
+        Flops.eval_flops_func)
       # If both branches have the same flops count, lift it out
       if (true_func_flops.bodies[-1].operator == Operator.LITERAL and
           false_func_flops.bodies[-1].operator == Operator.LITERAL and
@@ -127,7 +127,7 @@ class Flops(object):
           false_func_flops.bodies[-1].params["val"]):
         return accum(1. + true_func_flops.bodies[-1].params["val"])
       else:
-        res_cond = Expr.eval_operator_tracer(
+        res_cond = Expr.eval_std_operator(
           Operator.COND_GE,
           dict(true_func=true_func_flops,
                false_func=false_func_flops),
@@ -150,7 +150,7 @@ def count_flops(func: Callable) -> Callable:
   def wrapped_flops(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_callable(
       func, map_list(Tracer.val_to_type, args))
-    res_flops = Flops.eval_flops_func_tracer(
+    res_flops = Flops.eval_flops_func(
       func_f, *(itertools.chain(args, func_f_env)))
     return res_flops
 

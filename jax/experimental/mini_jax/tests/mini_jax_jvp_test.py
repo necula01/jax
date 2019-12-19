@@ -180,9 +180,28 @@ class JvpTest(jtu.JaxTestCase):
       return 1. + x + mj.jit(inner)(5.)
 
     jvp_func = mj.jvp(func)
-    print(mj.trace(jvp_func)(3., 5.).pp())
-
     self.assertEqual((55., 90.), jvp_func(3., 5.))
+    self.assertMultiLineStrippedEqual("""
+{lambda v0 v1.
+  # v0: float, v1: float
+  n0 = mul 2.0 v0
+  n1 = add v0 n0
+  n2 = add 1.0 n1
+  n3 = mul 2.0 v1
+  n4 = add v1 n3
+  n5 = jit_call[ func={lambda v5 v6 v7 v8.
+                        # v5: float, v6: float, v7: float, v8: float
+                        n0 = mul v6 v5
+                        n1 = mul v8 v5
+                        n2 = mul v6 v7
+                        n3 = add n1 n2
+                        in (n0 n3,)} ] 5.0 n1 0.0 n4
+  n6 = proj[ idx=0 ] n5
+  n7 = add n2 n6
+  n8 = proj[ idx=1 ] n5
+  n9 = add n4 n8
+  in (n7 n9,)}
+          """, str(mj.trace(jvp_func)(3., 5.).pp()))
 
   def test_jvp_jit_multiple_results(self):
     def func(x):

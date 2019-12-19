@@ -74,8 +74,8 @@ class Grad(object):
   """Methods related to backward differentiation."""
 
   @staticmethod
-  def eval_vjp_func_tracer(func: Function,
-                           *args_out_adj: Sequence[Value]) -> Sequence[Value]:
+  def _eval_vjp_func(func: Function,
+                     *args_out_adj: Sequence[Value]) -> Sequence[Value]:
     """Evaluates the function and its vector-Jacobian product.
 
     Care must be taken bound the work by a constant-factor over the number
@@ -196,9 +196,9 @@ class Grad(object):
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
       args_v = map_list(eval_expr, e.args) + out_adj
-      arg_adj = Expr.eval_operator_tracer(Operator.JIT_CALL,
-                                          dict(func=vjp_func),
-                                          args_v)
+      arg_adj = Expr.eval_std_operator(Operator.JIT_CALL,
+                                       dict(func=vjp_func),
+                                       args_v)
       arg_adj = (arg_adj,) if len(func.invars) == 1 else arg_adj
       for a, a_adj in zip(e.args, arg_adj):
         add_adjoint(a, a_adj)
@@ -226,10 +226,10 @@ class Grad(object):
       # Insert the out_adj for both branches
       args_vjp_v = (args_v[0:1 + len(true_func_f.invars)] + out_adj +
                     args_v[1 + len(true_func_f.invars):] + out_adj)
-      args_adj = Expr.eval_operator_tracer(Operator.COND_GE,
-                                           dict(true_func=true_func_vjp_expanded,
+      args_adj = Expr.eval_std_operator(Operator.COND_GE,
+                                        dict(true_func=true_func_vjp_expanded,
                                                 false_func=false_func_vjp_expanded),
-                                           args_vjp_v)
+                                        args_vjp_v)
       assert len(args_adj) == len(e.args) - 1
       add_adjoint(e.args[0], 0.)  # The predicate arguments
       for a, a_adj in zip(e.args[1:], args_adj):
@@ -247,12 +247,9 @@ class Grad(object):
       for the actual arguments and the output adjoints, and produces
       len(func.invars) outputs, for the input adjoints.
     """
-    func_vjp_et = (
-        [inv.etype for inv in func.invars] +
-        [body.etype for body in func.bodies])
-    return func.trace_interpreter(
-      Grad.eval_vjp_func_tracer,
-      args_t=func_vjp_et)
+    return func.trace_evaluator(
+      Grad._eval_vjp_func,
+      extra_args_typ=[body.etype for body in func.bodies])
 
 
 def grad(func: Callable) -> Callable[..., Function]:
@@ -271,7 +268,7 @@ def grad(func: Callable) -> Callable[..., Function]:
                                                    args))
     assert len(
       func_f.bodies) == 1, "grad is only defined for functions that return a single result"
-    res_grad = Grad.eval_vjp_func_tracer(
+    res_grad = Grad._eval_vjp_func(
       func_f, *tuple(itertools.chain(args, func_f_env, [1.])))
     # Drop adjoints for the freevars
     # TODO: this is an ugly result of the convention that the result is either tuple or value

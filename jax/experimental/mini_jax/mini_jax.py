@@ -160,9 +160,9 @@ class Expr(object):
     raise NotImplementedError
 
   @staticmethod
-  def eval_operator_tracer(op: Operator, params, args_v: Sequence[Value],
-                           env: Dict[int, Value] = None) -> Value:
-    """Evaluates an expression, given values or tracing values for arguments.
+  def eval_std_operator(op: Operator, params, args_v: Sequence[Value],
+                        env: Dict[int, Value] = None) -> Value:
+    """Standard evaluates of an expression, given values or tracing values for arguments.
 
     If any of the arguments is a tracer, the result is a tracer, with the
     corresponding symbolic expression. If all arguments are Python values,
@@ -253,8 +253,8 @@ class Expr(object):
 
     def eval_expr(e: 'Expr') -> Value:
       return e.visit_expr(
-        lambda e, args_v: Expr.eval_operator_tracer(e.operator, e.params, args_v,
-                                                    env),
+        lambda e, args_v: Expr.eval_std_operator(e.operator, e.params, args_v,
+                                                 env),
         memo=expr_values)
     return eval_expr
 
@@ -357,12 +357,12 @@ class Function(object):
             >> pp_str("}"))
 
   @staticmethod
-  def trace_callable(func: Callable, args_et: List[ExprType]
+  def trace_callable(func: Callable, args_typ: List[ExprType]
                      ) -> Tuple['Function', Sequence['Tracer']]:
     """Trace a callable given some types for the arguments.
 
     Args:
-      args_et: types corresponding to the `func` arguments
+      args_typ: types corresponding to the `func` arguments
 
     Returns: a pair of a closed `Function` along with a list of `Tracer`s
       corresponding to computations from shallower scopes used in the function
@@ -373,12 +373,7 @@ class Function(object):
     try:
       scope_nesting_depth = Globals.scope_nesting_depth
 
-      def make_tracing_variable(etype):
-        return Tracer.build(Operator.VAR,
-                            dict(id=next(Globals.variable_id)),
-                            (), etype=etype)
-
-      args_t = map_tuple(make_tracing_variable, args_et)
+      args_t = map_tuple(Tracer.new_var_tracer, args_typ)
       res = func(*args_t)
       if not isinstance(res, tuple):
         res = (res,)
@@ -399,34 +394,38 @@ class Function(object):
     finally:
       Globals.scope_nesting_depth -= 1
 
-  def trace_interpreter(
+  def trace_evaluator(
       self,
-      interpreter: Callable[['Function', Sequence['Tracer']], Any],
-      args_t: Sequence[ExprType] = None
+      evaluator: Callable[['Function', Sequence['Tracer']], Any],
+      extra_args_typ: Sequence[ExprType] = None
   ) -> 'Function':
-    """Runs a traceable interpreter over a Function to produce transformed Function.
+    """Runs a traceable evaluator over a Function to produce transformed Function.
 
-    This is the workhorse of composable transformations. Given an interpreter
+    This is the workhorse of composable transformations. Given an evaluator
     that evaluates a `Function` with different semantics for operators and uses
-    only overloaded operations on the arguments, run `trace_interpreter` to
-    interpret the function and get the transformed `Function`.
+    only overloaded operations on the arguments, `trace_evaluator` returns
+    the transformed `Function`.
 
     Args:
-      interpreter: a Python traceable function, that given a `Function` and
-        a set of Tracer evaluates the Function according to the transformed
+      evaluator: a Python traceable function, that given a `Function` and
+        a set of Tracers evaluates the Function according to the transformed
         semantics.
-      args_t: optional, the list of types for the resulting function. If not
-        given, then use the types of the original function.
+      extra_args_typ: optional, the list of types of additional arguments for
+        the resulting function.
 
     Returns:
       a transformed Function.
     """
-    args_t = [inv.etype for inv in self.invars] if args_t is None else args_t
-    res_func_f, res_func_env = Function.trace_callable(
-      lambda *x: interpreter(self, *x),
-      args_t)
-    assert not res_func_env, "The function was already closed"
-    return res_func_f
+    args_typ = [iv.etype for iv in self.invars]  # Start with the current arg types
+    if extra_args_typ is not None:
+      args_typ += extra_args_typ
+    args_t = map_tuple(Tracer.new_var_tracer, args_typ)
+    res_t = evaluator(self, *args_t)
+    if not isinstance(res_t, tuple):
+      res_t = (res_t,)
+    # res may contain literals, turn them into Tracer
+    res_t = tuple(Tracer.val_to_tracer(r) for r in res_t)
+    return Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
 
   def result_type(self):
     """The result type of the function.
@@ -497,6 +496,13 @@ class Tracer(object):
   def val_to_type(arg: Value) -> ExprType:
     """Given a Value, get its type."""
     return Tracer.val_to_tracer(arg).expr.etype
+
+
+  @staticmethod
+  def new_var_tracer(etype: ExprType) -> 'Tracer':
+    return Tracer.build(Operator.VAR,
+                        dict(id=next(Globals.variable_id)),
+                        (), etype=etype)
 
   @staticmethod
   def _force_scope_depth(args_t: Sequence['Tracer'],
@@ -618,7 +624,7 @@ class Ops(object):
       false_func, map_list(Tracer.val_to_type, false_args))
     assert str(true_func_f.result_type()) == str(false_func_f.result_type()), (
       "{} != {}".format(true_func_f.result_type(), false_func_f.result_type()))
-    return Expr.eval_operator_tracer(
+    return Expr.eval_std_operator(
       Operator.COND_GE,
       dict(true_func=true_func_f,
            false_func=false_func_f),
