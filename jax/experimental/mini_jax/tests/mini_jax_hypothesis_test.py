@@ -45,7 +45,7 @@ from jax import test_util as jtu
 from jax.pprint_util import pp
 
 import os
-from typing import Callable, List, Dict, NamedTuple, Tuple, Union
+from typing import Any, Callable, List, Dict, NamedTuple, Tuple, Union, Sequence
 
 from jax.experimental import mini_jax as mj
 from jax.experimental.mini_jax.mini_jax import Operator, Globals
@@ -102,13 +102,13 @@ class MiniJaxWrapper(object):
   def enter_call(self, method_name: str, msg: str):
     self.stack[-1] += 1
     if self.verbose_trace:
-      print("{} {} {}".format(self.header(), method_name, msg))
+      print("{} enter {} {}".format(self.header(), method_name, msg))
     self.stack.append(0)
 
   def exit_call(self, method_name: str, msg: str):
     self.stack.pop()
     if self.verbose_trace:
-      print("{} {} {}".format(self.header(), method_name, msg))
+      print("{} exit {} {}".format(self.header(), method_name, msg))
 
   def make_global_dict(self):
     """Make global dict for exec"""
@@ -121,6 +121,7 @@ class MiniJaxWrapper(object):
 
     def wrapped_transformer_method(method_name, transformer):
       """Func is a transformer Callable->Callable"""
+
       def doit(transformed, *args):
         self.enter_call(method_name, "args={}".format(args))
         res = transformed(*args)
@@ -160,6 +161,56 @@ class FakeMiniJax(MiniJaxWrapper):
   def jit(self, func):
     return func
 
+  def val_and_jacobian(self, func, args: List) -> Tuple[
+    Any, Sequence[Sequence]]:
+    """Compute numerically the value and jacobian (list of partial derivatives).
+
+    Args:
+      func: a function of n arguments and m results (m >=1 iff res is tuple)
+      args: a tuple of n arguments, the point where to evaluate gradient
+    Return:
+      a list of length n (for each argument) of m-tuples (for each output)
+    """
+    self.differentiation_level += 1
+    if self.differentiation_level >= 3:
+      msg = "Differentiation too deep (level {})"
+      raise NumericalDifferentiationError(
+        msg.format(self.differentiation_level))
+    # The base result
+    res_0 = func(*args)
+    is_tuple = isinstance(res_0, tuple)
+    if not is_tuple:  # Make it a tuple
+      res_0 = (res_0,)
+
+    args = list(args)  # Mutable
+
+    def one_row_partial_derivatives(arg_num: int) -> Sequence:
+      arg = args[arg_num]
+      # A small epsilon away from the argument
+      eps = 1e-3 if np.isclose(0., arg, atol=1e-2) else arg * 1e-3
+
+      def eval_perturbation(factor: float):
+        perturbed_args = args[:]  # Copy
+        perturbed_args[arg_num] += factor * eps
+        perturbed_res = func(*perturbed_args)
+        if not is_tuple:
+          perturbed_res = (perturbed_res,)
+        tan = [(pr - r) / (factor * eps) for pr, r in
+              zip(perturbed_res, res_0)]
+        return np.array(tan)
+
+      tan_minus_1 = eval_perturbation(-1.)
+      tan_1 = eval_perturbation(1.)
+      # Tolerate 10% off and round to 0.1
+      if not np.allclose(tan_minus_1, tan_1, atol=0.08):
+        msg = "Tangent discontinuity ({} and {})"
+        raise NumericalDifferentiationError(msg.format(tan_minus_1, tan_1))
+      return np.round((tan_1 + tan_minus_1) / 2., 4).tolist()
+
+    jacobian = [one_row_partial_derivatives(i) for i in range(len(args))]
+    self.differentiation_level -= 1
+    return (res_0 if is_tuple else res_0[0], jacobian)
+
   def jvp(self, func):
     """Estimate tangent numerically."""
 
@@ -169,59 +220,34 @@ class FakeMiniJax(MiniJaxWrapper):
       args = args_with_tangents[0:nr_orig_vars]
       args_tan = args_with_tangents[nr_orig_vars:]
 
-      self.differentiation_level += 1
-      if self.differentiation_level >= 3:
-        msg = "Differentiation too deep (level {})"
-        raise NumericalDifferentiationError(msg.format(self.differentiation_level))
-      EPS = 1e-3 ** self.differentiation_level
-      rounding_digits = 3 * self.differentiation_level - 1
-      tangent_tolerance = 1e-3 ** (self.differentiation_level - 1)
+      res, jacobian = self.val_and_jacobian(func, args)
+      is_tuple = isinstance(res, tuple)
+      if not is_tuple:
+        res = (res,)
+      # Each row of the Jacobian are partial derivatives for one argument
+      out_tan = [0.] * len(res)
+      for jac_row, arg_tan in zip(jacobian, args_tan):
+        assert len(out_tan) == len(jac_row)
+        for i, pdi in enumerate(jac_row):
+          out_tan[i] += pdi * arg_tan
 
-      res_0 = func(*args)  # The base value
-      is_tuple = isinstance(res_0, tuple)
-      if not is_tuple:  # Force it a tuple
-        res_0 = (res_0,)
-
-      def eval_slope(nr_eps):
-        """Eval the slope of the function at a certain # of EPS from args."""
-        res = func(*[x + nr_eps * EPS * t
-                     for x, t in zip(args, args_tan)])
-        res = res if is_tuple else (res,)
-        slope = [np.round((r - r0) / (nr_eps * EPS),
-                          rounding_digits) for r, r0 in zip(res, res_0)]
-        return slope
-
-      # Check that tangent is the same x - EPS, x, and x + EPS
-      tan_m1 = eval_slope(-1)
-      tan_1 = eval_slope(1)
-
-      if not np.allclose(tan_1, tan_m1, atol=tangent_tolerance):
-        msg = "Tangent discontinuity ({} and {})"
-        raise NumericalDifferentiationError(msg.format(tan_m1, tan_1))
-
-      self.differentiation_level -= 1
       if is_tuple:
-        return tuple(itertools.chain(res_0, tan_1))
+        return tuple(itertools.chain(res, out_tan))
       else:
-        return (res_0[0], tan_1[0])
+        return (res[0], out_tan[0])
 
     return wrapped
 
   def grad(self, func):
-    jvp_func = self.jvp(func)
 
     def wrapped(*args):
-      partial_derivatives = []
-      for i in range(len(args)):
-        args_with_tan = tuple(
-          itertools.chain(args,
-                          ([0.] * i + [1.] + [0.] * (len(args) - i - 1))))
-        _, res_tan = jvp_func(*args_with_tan)
-        partial_derivatives.append(res_tan)
-      if len(partial_derivatives) == 1:
-        return partial_derivatives[0]
+      res, jacobian = self.val_and_jacobian(func, args)
+      assert not isinstance(res, tuple)
+      assert all([len(jac_row) == 1 for jac_row in jacobian])
+      if len(args) == 1:
+        return jacobian[0][0]
       else:
-        return tuple(partial_derivatives)
+        return tuple([jac_row[0] for jac_row in jacobian])
 
     return wrapped
 
@@ -287,15 +313,81 @@ def check_code_example(code: PrettyPrint,
 class FakeMiniJaxTest(jtu.JaxTestCase):
   """Tests primarily the numerical differentiation in FakeMiniJax"""
 
+  def test_fake_jacobian_0(self):
+    def func(x):
+      return 2. * x
+
+    fake_mj = FakeMiniJax()
+    self.assertEqual((6., [[2.]]),
+                     fake_mj.val_and_jacobian(func, [3.]))
+
+  def test_fake_jvp_0(self):
+    def func(x, y, z):
+      return (2. * x + 3. * y,
+              12. * x + 14. * z)
+
+    fake_mj = FakeMiniJax().make_global_dict()
+    (res0, res1) = func(3., 5., 7.)
+    self.assertEqual((res0, res1, 2. * 22. + 3. * 23., 12. * 22. + 14. * 24.),
+                     fake_mj["jvp"](func)(3., 5., 7., 22., 23., 24.))
+
+  def test_fake_grad_0(self):
+    def func(x, y, z):
+      return 2. * x + 3. * y + 4. * z
+
+    fake_mj = FakeMiniJax().make_global_dict()
+    self.assertEqual((2., 3., 4.),
+                     fake_mj["grad"](func)(0., 0., 1.))
+
+  def test_fake_jacobian_multiple(self):
+    def func(x, y, z):
+      return (2. * x + 3. * y + 4. * z,
+              12. * x + 13. * y + 14. * z)
+
+    fake_mj = FakeMiniJax()
+    self.assertEqual(((11., 41.),
+                      [[2., 12.], [3., 13.], [4., 14.]]),
+                     fake_mj.val_and_jacobian(func, [0., 1., 2.]))
+
+  def test_fake_jacobian_rounding(self):
+    factor1 = 2.00000001
+
+    def func1(x):
+      return factor1 * x
+
+    fake_mj = FakeMiniJax()
+    self.assertEqual((factor1,
+                      [[2.]]),
+                     fake_mj.val_and_jacobian(func1, [1.]))
+
+    factor2 = 2.001
+
+    def func2(x):
+      return factor2 * x
+
+    self.assertEqual((factor2,
+                      [[2.001]]),
+                     fake_mj.val_and_jacobian(func2, [1.]))
+
+    def func3(x):
+      return x ** 2
+
+    self.assertAllClose((10. ** 2,
+                         [[2. * 10.]]),
+                        fake_mj.val_and_jacobian(func3, [10.]),
+                        check_dtypes=True,
+                        atol=0.1)
+
   def test_fake_jvp_discountinuity(self):
     """Test the fake JVP, at discontinuity"""
     fake_mj = FakeMiniJax().make_global_dict()
+
     def f0(v2):
       return fake_mj["cond_ge"](v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
 
     def f1(v2):
       return fake_mj["cond_ge"](0. - v2, lambda tv: 1., (0.,), lambda fv: 0.,
-                                 (0.,))
+                                (0.,))
 
     with self.assertRaisesRegex(NumericalDifferentiationError, ""):
       fake_mj["jvp"](f0)(0.0, 3.0)
@@ -320,6 +412,7 @@ _result = (v17, v18, v19, v20)
   def test_fake_jvp_rounding(self):
     """We round numerical differential, to try to not affect following conditionals"""
     fake_mj = FakeMiniJax().make_global_dict()
+
     def f1(x):
       return 3. * x
 
@@ -341,6 +434,7 @@ print("{} result = {} y_tan={}".format(variant, _result, y_tan))
   def test_fake_jvp_small_tangents(self):
     """We round numerical differential, to try to not affect following conditionals"""
     fake_mj = FakeMiniJax().make_global_dict()
+
     def func(x):
       return 2. * x
 
@@ -350,15 +444,19 @@ print("{} result = {} y_tan={}".format(variant, _result, y_tan))
     self.assertEqual(3.e-2, y_tan)  # Must be rounded to exactly 2e-5.
 
   def test_second_degree(self):
-    fake_mj = FakeMiniJax().make_global_dict()
+    fake_mj = FakeMiniJax(verbose_trace=True).make_global_dict()
+
+    # Both f1 and f3 are the identity functions
     def f1(v2):
       def f3(v5):
         return v5
+
       _, v11 = fake_mj["jvp"](f3)(0.0, v2)
       return v11
 
     v20 = fake_mj["grad"](f1)(2.)
     self.assertEqual(1., v20)
+
 
 ###
 class Environment(object):
