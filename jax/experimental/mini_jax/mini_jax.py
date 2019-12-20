@@ -380,7 +380,7 @@ class Function(object):
 
       # res may contain literals, turn them into Tracer
       res_t = tuple(Tracer.val_to_tracer(r) for r in res)
-      res_e, res_env = Tracer._force_scope_depth(res_t, scope_nesting_depth)
+      res_e, res_env = Tracer.closure_convert(res_t, scope_nesting_depth)
       freevars = []
       freevars_env = []
       for v, env_t in res_env:
@@ -505,14 +505,14 @@ class Tracer(object):
                         (), etype=etype)
 
   @staticmethod
-  def _force_scope_depth(args_t: Sequence['Tracer'],
-                         scope_nesting_depth: int
-                         ) -> Tuple[Sequence[Expr], Environment]:
+  def closure_convert(args_t: Sequence['Tracer'],
+                      scope_nesting_depth: int
+                      ) -> Tuple[Sequence[Expr], Environment]:
     """Prepares a list of tracing values for use at a given scope depth.
 
     If there are tracers from shallower scope depths, they are replaced
     with new variables, and an environment is constructed for these variables
-    along with the shallow tracers they represent.
+    along with the expressions of the shallow tracers they represent.
     """
     env = []  # Sequence[Environment]
     args_e = []  # Sequence[Expr]
@@ -548,8 +548,8 @@ class Tracer(object):
     Returns:
       a `Tracer` at the current scope nesting depth.
     """
-    args_e, args_env = Tracer._force_scope_depth(args_t,
-                                                 Globals.scope_nesting_depth)
+    args_e, args_env = Tracer.closure_convert(args_t,
+                                              Globals.scope_nesting_depth)
     expr = Expr(op, tuple(args_e), etype=etype, **params)
     return Tracer(expr, Globals.scope_nesting_depth, args_env)
 

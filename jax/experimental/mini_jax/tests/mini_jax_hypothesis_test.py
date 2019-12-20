@@ -202,10 +202,18 @@ class FakeMiniJax(MiniJaxWrapper):
       tan_minus_1 = eval_perturbation(-1.)
       tan_1 = eval_perturbation(1.)
       # Tolerate 10% off and round to 0.1
-      if not np.allclose(tan_minus_1, tan_1, atol=0.08):
+      if not np.allclose(tan_minus_1, tan_1, rtol=0.08):
         msg = "Tangent discontinuity ({} and {})"
         raise NumericalDifferentiationError(msg.format(tan_minus_1, tan_1))
-      return np.round((tan_1 + tan_minus_1) / 2., 4).tolist()
+      average_tan = (tan_1 + tan_minus_1) / 2.
+      if self.differentiation_level == 1:
+        # In inner differentiation, we use higher precision, in the worst case
+        # we will switch some conditionals that the top-level differentiation
+        # will detect as a discontinuity. For the top-level differentiation
+        # we do round, to prevent switching of following conditionals
+        average_tan = np.round(average_tan, 2)
+
+      return average_tan.tolist()
 
     jacobian = [one_row_partial_derivatives(i) for i in range(len(args))]
     self.differentiation_level -= 1
@@ -366,7 +374,7 @@ class FakeMiniJaxTest(jtu.JaxTestCase):
       return factor2 * x
 
     self.assertEqual((factor2,
-                      [[2.001]]),
+                      [[2.0]]),
                      fake_mj.val_and_jacobian(func2, [1.]))
 
     def func3(x):
@@ -775,6 +783,7 @@ class JaxGenTest(jtu.JaxTestCase):
     """Bug found with hypothesis."""
     raise self.skipTest("Reserve test for Hypothesis repro")
     code = """
+
 """
     check_code_example(code, verbose_trace=True)
 

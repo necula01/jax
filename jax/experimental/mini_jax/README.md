@@ -355,7 +355,9 @@ though the data dependencies for `x * 4` are ready before we enter the `jit`
 scope. 
 This is not a clear design requirement though, perhaps the `inner` function
 is in a library and was written without thinking about `jit`, or other
-transformations coming from the dynamic scope. 
+transformations coming from the dynamic scope. Furthermore, should the gradient
+computations arising from code inside a `jit` be also kept strictly under `jit`, 
+even if they are mere accumulation of constant factors? 
 
 JAX and mini-JAX do different things here. JAX does pretty aggressive constant
 folding, meaning that it does computations as eagerly as possible. This 
@@ -506,7 +508,9 @@ Mini-JAX is structured as follows:
    the branch and function as parameters.
    * `ExprType` represents types associated with each `Expr`. In 
     mini-JAX only the `float` type is implemented.  
-   * `Function` is a class to represent *closed* functions over `Expr`. 
+   * `Function` is a class to represent *closed* functions over `Expr`. In the 
+   addition to one or more function bodies `Expr`, a `Function` also has a 
+   set of argument `Expr` of variable kind. 
    * `Tracer` is the class of tracer values. A tracer value has not 
    only the symbolic `Expr` but also information about the scope nesting depth at 
    which it was constructed and the environment (tracer values from shallower
@@ -567,7 +571,7 @@ def eval_pickle(func: Function, args_after: List[Value]) : Value:
   return func.body.visit_memoized(eval_transform_operator, env)
 ```
 
-And the custom evaluator for a use of an `Operator`. The `args_v` and
+And the custom evaluator for a use of an `Operator`. The `args_v` are the
 custom values for the transformed arguments and `env` is the environment
 mapping variables (from before transformation) to transformed values: 
 ```
