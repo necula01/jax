@@ -162,6 +162,7 @@ class FlopsTest(jtu.JaxTestCase):
     self.assertAllClose(4., mj.count_flops(func)(-1.),
                         check_dtypes=True)
 
+
   def test_flops_jit(self):
     def func(x):
       z = x * 2.  # Counts as 1

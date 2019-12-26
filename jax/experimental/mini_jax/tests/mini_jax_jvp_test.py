@@ -30,8 +30,8 @@ class JvpTest(jtu.JaxTestCase):
     def func(x):
       return 1. + x + 2. * x + x * x
 
-    res = mj.jvp(func)(3., 5.)
-    self.assertEqual((19., 45.), res)
+    #res = mj.jvp(func)(3., 5.)
+    #self.assertEqual((19., 45.), res)
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
   # v0: float, v1: float
@@ -106,16 +106,20 @@ class JvpTest(jtu.JaxTestCase):
     """, str(mj.trace(mj.jvp(func))(3., 5., 30., 50.).pp()))
     self.assertEqual((14., 140.), mj.jvp(func)(3., 5., 30., 50.))
 
-  def test_jvp_nested_jvp(self):
+  def test_jvp_nested_jvp_freevars(self):
     # func(x, y) = (2 * x + y) * 7
     def func(x, y):
       z = 2. * x
+
       def inner(w):
         return z * w + y * w
+
       _, res_tan = mj.jvp(inner)(x, 7.)
       return res_tan
+
     def func_equiv(x, y):
       return (2. * x + y) * 7.
+
     self.assertEqual(func_equiv(3., 5.), func(3., 5.))
 
     # Derivative: jvp_func(x, y, x_tan, y_tan) = ((2 * x + y) * 7,   (2. * x_tan + y_tan) * 7)
@@ -132,7 +136,34 @@ class JvpTest(jtu.JaxTestCase):
   n7 = add n5 n6
   in (n3 n7,)}
     """, str(mj.trace(mj.jvp(func))(3., 5., 30., 50.).pp()))
-    self.assertEqual((func_equiv(3., 5.), (2. * 30. + 50.) * 7.), mj.jvp(func)(3., 5., 30., 50.))
+    self.assertEqual((func_equiv(3., 5.), (2. * 30. + 50.) * 7.),
+                     mj.jvp(func)(3., 5., 30., 50.))
+
+  def test_jvp_nested_jvp_3(self):
+    def func1(x):
+      s = 2. * x
+      def func2(y):
+        u = 3. * y + 4. * x + 5. * s
+        # u == 3y + 14x
+        def func3(z):
+          # 6z + 21y + 98x + 8x == 6z + 21y + 106x
+          return 6. * z + 7. * u + 8. * x
+        v, vt = mj.jvp(func3)(1., u)
+        # v == 6 + 21y + 106x
+        # vt == 6u == 18y + 84x
+        # v + vt = 6 + 39y + 190x
+        return v + vt
+
+      w, wt = mj.jvp(func2)(x, s)
+      # w = 6 + 39x + 190x = 6 + 229x
+      # wt = 39s = 78x
+      # w + wt = 6 + 307x
+      return w + wt
+
+    def func_equiv(x):
+      return 6 + 307. * x
+    self.assertEqual(func_equiv(3.), func1(3.))
+
 
   def test_second_derivative(self):
     def func1(y):
@@ -303,7 +334,7 @@ class JvpTest(jtu.JaxTestCase):
   in (n7 n8,)}
       """, str(mj.trace(mj.jvp(func))(5., 1.).pp()))
 
-  def test_jvp_cond_different_arity(self):
+  def test_jvp_cond_different_input_arity(self):
     """The conditional branches have different arity."""
     def func(x1):
       z = x1 * 2.

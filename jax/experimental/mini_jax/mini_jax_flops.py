@@ -44,7 +44,7 @@ from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value
+  Value, Evaluator, Globals
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -54,26 +54,24 @@ FlopsVal = Value  # In principle, we could count more things
 class Flops(object):
   """Methods related to counting flops."""
 
-  @staticmethod
-  def eval_flops_func(func: Function, *args_v: Sequence[Value]
+  def eval_flops_func(self, func: Function, *args_v: Sequence[Value]
                       ) -> Sequence[Value]:
     # Prepare an expression evaluator for when flops are data-dependent
-    env = {iv.params["id"]: arg_v for iv, arg_v in zip(func.invars, args_v)}
-    eval_expr = Expr.make_memoized_expr_evaluator(env)
+    eval_std_expr = func.make_evaluator(args_v,
+                                        eval_operator=Expr.eval_std_operator)
 
     # The Expr.visit_expr will only visit an expression once, but the result
     # of the expression may be used multiple times in parent expressions. To
     # ensure we only count once, we pass a mutable accumulator to the visitor,
     # instead of carrying the flops with the expression values.
     accum_flops = [0.]  # type: List[Value]  - flops accumulator
-    func.visit_bodies_memoized(Flops.eval_flops_expr_no_args,
-                               eval_expr=eval_expr,
-                               accum_flops=accum_flops)
+    func.evaluate(args_v, eval_expr=self.eval_flops_expr_no_args,
+                  eval_std_expr=eval_std_expr,
+                  accum_flops=accum_flops)
     return accum_flops[0]
 
-  @staticmethod
-  def eval_flops_expr_no_args(e: Expr, args_v: Sequence[FlopsVal],
-                              eval_expr: Callable[[Expr], Value] = None,
+  def eval_flops_expr_no_args(self, e: Expr, args_v: Sequence[FlopsVal],
+                              eval_std_expr: Callable[[Expr], Value] = None,
                               accum_flops: List[FlopsVal] = None) -> FlopsVal:
     """Computes the flops, excluding the flops of the arguments.
 
@@ -99,15 +97,14 @@ class Flops(object):
 
     if e.operator == Operator.JIT_CALL:
       func = e.params["func"]
-      flops_func = func.trace_evaluator(
-        Flops.eval_flops_func)
+      flops_func = func.transform_function(Flops().eval_flops_func)
       # Perhaps the flops of the function is data-independent
-      if flops_func.bodies[-1].operator == Operator.LITERAL:
+      if flops_func.results[-1].operator == Operator.LITERAL:
         # Add in the cost of the call itself
         return accum(1. + float(len(func.invars)) +
-                     flops_func.bodies[-1].params["val"])
+                     flops_func.results[-1].params["val"])
       else:
-        e_args_v = map_list(eval_expr, e.args)
+        e_args_v = map_list(eval_std_expr, e.args)
         res = Expr.eval_std_operator(Operator.JIT_CALL,
                                      dict(func=flops_func),
                                      e_args_v)
@@ -115,23 +112,21 @@ class Flops(object):
 
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
-      true_func_flops = true_func_f.trace_evaluator(
-        Flops.eval_flops_func)
+      true_func_flops = true_func_f.transform_function(Flops().eval_flops_func)
       false_func_f = e.params["false_func"]
-      false_func_flops = false_func_f.trace_evaluator(
-        Flops.eval_flops_func)
+      false_func_flops = false_func_f.transform_function(Flops().eval_flops_func)
       # If both branches have the same flops count, lift it out
-      if (true_func_flops.bodies[-1].operator == Operator.LITERAL and
-          false_func_flops.bodies[-1].operator == Operator.LITERAL and
-          true_func_flops.bodies[-1].params["val"] ==
-          false_func_flops.bodies[-1].params["val"]):
-        return accum(1. + true_func_flops.bodies[-1].params["val"])
+      if (true_func_flops.results[-1].operator == Operator.LITERAL and
+          false_func_flops.results[-1].operator == Operator.LITERAL and
+          true_func_flops.results[-1].params["val"] ==
+          false_func_flops.results[-1].params["val"]):
+        return accum(1. + true_func_flops.results[-1].params["val"])
       else:
         res_cond = Expr.eval_std_operator(
           Operator.COND_GE,
           dict(true_func=true_func_flops,
                false_func=false_func_flops),
-          map_list(eval_expr, e.args))
+          map_list(eval_std_expr, e.args))
         return accum(1. + res_cond)
 
 
@@ -148,9 +143,8 @@ def count_flops(func: Callable) -> Callable:
   """
 
   def wrapped_flops(*args: Sequence[Value]):
-    func_f, func_f_env = Function.trace_callable(
-      func, map_list(Tracer.val_to_type, args))
-    res_flops = Flops.eval_flops_func(
+    func_f, func_f_env = Function.trace_user_function(func, args)
+    res_flops = Flops().eval_flops_func(
       func_f, *(itertools.chain(args, func_f_env)))
     return res_flops
 

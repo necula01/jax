@@ -35,7 +35,7 @@ from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Globals
+  Value, Globals, Evaluator
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, pp_list, pp_str
 from jax.pprint_util import PrettyPrint
@@ -71,8 +71,10 @@ class Jit(object):
     if e.operator == Operator.PROJECTION:
       return pp_str(
         "{} = {}[{}]".format(name, args_s[0], e.params["idx"]))
+
     if e.operator == Operator.JIT_CALL:
       return Jit.compile_func_call(e.params["func"], args_s, name)
+
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
       true_func_compiled = Jit.compile_func_call(
@@ -110,7 +112,7 @@ class Jit(object):
     Returns: a pair, with the function name, and the PrettyPrinter for
       printing the function definition and the call.
     """
-    bindings, names = Expr.three_address_code(func.bodies)
+    bindings, names = Expr.three_address_code(func.results)
     func_name = "f{}".format(next(Globals.function_id))
     header = (pp_str("def {}(".format(func_name)) >>
               pp_list(func.invars, hsep=", ") >> pp_str("):"))
@@ -150,6 +152,23 @@ class Jit(object):
     exec(compiled_str, {}, locals)
     return locals['_result']
 
+class EvalJit(Evaluator):
+  def __init__(self, outer):
+    super(EvalJit, self).__init__(outer, "Jit")
+
+  def eval_operator(self, op: Operator, params, args_v: Sequence[Value]) -> None:
+    return None
+
+  def get_results(self, func: Function, args_v: Sequence[Value]):
+    try:
+      Globals.evaluator = self.outer
+      assert len(func.invars) == len(args_v)
+      return Expr.eval_std_operator(Operator.JIT_CALL,
+                                    dict(func=func),
+                                    args_v)
+    finally:
+      Globals.evaluator = self
+
 
 def jit(func: Callable):
   """
@@ -159,12 +178,12 @@ def jit(func: Callable):
   """
 
   def wrapped_jit(*args: Sequence[Value]):
-    # Collect the function for compilation
-    func_f, func_f_env = Function.trace_callable(func,
-                                                 map_list(
-                                                   Tracer.val_to_type,
-                                                   args))
-    # If there are freevars pass them on
+    if Globals.use_evaluators:
+      eval_res = EvalJit.evaluate_user_function(func, args)
+      return eval_res
+
+    func_f, func_f_env = Function.trace_user_function(func, args)
+    # Turn it into an Expr, or evaluate if none of the arguments are Tracer
     return Expr.eval_std_operator(Operator.JIT_CALL,
                                   dict(func=func_f),
                                   list(args) + func_f_env)

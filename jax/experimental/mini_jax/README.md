@@ -612,9 +612,10 @@ deferred computations (in COND_GE and JIT),
 invoked from `eval_pickle_operator`.
  
 ```
-def Function.trace_evaluator(func, evaluator, extra_args_typ: List[ExprType]) -> Function:
-    args_t : List[Tracer] = map(Tracer.new_var_tracer, func.vars.typ)
-    # Trace the user function, before the transformation
+def Function.trace_evaluator(func: Function, evaluator, 
+                             extra_args_typ: List[ExprType]) -> Function:
+    args_t : List[Tracer] = map(Tracer.new_var_tracer, 
+                                func.vars.typ + extra_args_typ)
     res_t : Tracer = evaluator(func, args_t)
     return Function(args_t.vars, res_t)
 ```
