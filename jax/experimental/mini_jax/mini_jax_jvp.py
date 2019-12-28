@@ -30,7 +30,7 @@ from typing import Any, Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Evaluator, Globals
+  Value
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, unzip
 
@@ -143,118 +143,6 @@ class Jvp(object):
 
     raise NotImplementedError
 
-
-class EvalJvp(Evaluator):
-  def __init__(self, outer):
-    super(EvalJvp, self).__init__(outer, "Jvp")
-
-  def prepare_args(self, args_post_transform: Sequence[Value]):
-    assert len(args_post_transform) % 2 == 0
-    nr_args = len(args_post_transform) // 2  # Arguments expected
-    return args_post_transform[0:nr_args]
-
-  def declare_vars(self, invars: Sequence[Expr], args_v: Sequence[Value]):
-    assert len(invars) * 2 == len(args_v)
-    for i, v in enumerate(invars):
-      self.set_value(v, (args_v[i], args_v[i + len(invars)]))
-
-  def additional_transform_args_typ(self, func: Function):
-    return [inv.etype for inv in func.invars]
-
-  def eval_operator(self, op: Operator, params: Dict,
-                    args_v: Sequence[Tuple[Value, Value]]) -> Tuple[
-    Value, Value]:
-    """Evaluates the JVP of an operator application.
-    Args:
-      e: the expression to evaluate
-      args_with_tan: for each operator argument, a pair of primal `Value`
-        and tangent `Value`.
-      env: primal and tangents values for the variables (by var id).
-    Returns:
-      a pair of primal result `Value` and tangent result `Value`.
-    """
-    args_with_tan = args_v
-    if op == Operator.VAR:
-      assert False
-      return self.values[op]
-    if op == Operator.LITERAL:
-      return (params["val"], 0.)
-    if op == Operator.ADD:
-      r = args_with_tan[0][0] + args_with_tan[1][0]
-      r_tan = args_with_tan[0][1] + args_with_tan[1][1]
-      return (r, r_tan)
-    if op == Operator.SUB:
-      r = args_with_tan[0][0] - args_with_tan[1][0]
-      r_tan = args_with_tan[0][1] - args_with_tan[1][1]
-      return (r, r_tan)
-    if op == Operator.MUL:
-      r = args_with_tan[0][0] * args_with_tan[1][0]
-      r_tan = (args_with_tan[0][1] * args_with_tan[1][0] +
-               args_with_tan[0][0] * args_with_tan[1][1])
-      return (r, r_tan)
-    if op == Operator.POW:
-      r = args_with_tan[0][0] ** params["pow"]
-      r_tan = float(params["pow"]) * args_with_tan[0][0] ** (
-          params["pow"] - 1) * args_with_tan[0][1]
-      return (r, r_tan)
-    if op == Operator.PROJECTION:
-      arg_with_tan = args_with_tan[0][params["idx"]]
-      assert isinstance(arg_with_tan, tuple)
-      return arg_with_tan
-
-    if op == Operator.JIT_CALL:
-      # The JVP calculation has to also be under JIT
-      func = params["func"]
-      # For each invar we add also a tangent var, with the same ExprType
-      args, args_tan = unzip(args_with_tan)
-      jvp_func = self.transform_function(func)
-      call_res = Expr.eval_std_operator(Operator.JIT_CALL,
-                                        dict(func=jvp_func),
-                                        args + args_tan)
-      # Convert from (res1, res2, res1_tan, res2_tan) to ((res1, res1_tan), (res2, res2_tan))
-      if len(func.results) > 1:
-        return tuple(
-          zip(call_res[0:len(func.results)], call_res[len(func.results):]))
-      else:
-        return call_res
-
-    if op == Operator.COND_GE:
-      args, args_tan = unzip(args_with_tan)
-      true_func_f = params["true_func"]
-      true_func_jvp = true_func_f.transform_function(
-        Jvp.eval_function,
-        extra_args_typ=[inv.etype for inv in true_func_f.invars])
-      false_func_f = params["false_func"]
-      false_func_jvp = false_func_f.transform_function(
-        Jvp.eval_function,
-        extra_args_typ=[inv.etype for inv in false_func_f.invars])
-      res_with_tan = Expr.eval_std_operator(
-        Operator.COND_GE,
-        dict(true_func=true_func_jvp,
-             false_func=false_func_jvp),
-        (args[0:1 + len(true_func_f.invars)] +  # pred and true_args
-         args_tan[1:1 + len(true_func_f.invars)] +  # true_args_tan
-         args[1 + len(true_func_f.invars):] +  # false_args
-         args_tan[1 + len(true_func_f.invars):]))  # false_args_tan
-      if len(true_func_f.results) > 1:
-        # Convert from (res1, res2, res1_tan, res2_tan) to ((res1, res1_tan), (res2, res2_tan))
-        return tuple(zip(res_with_tan[0:len(true_func_f.results)],
-                         res_with_tan[len(true_func_f.results):]))
-      else:
-        return res_with_tan
-
-    raise NotImplementedError
-
-  def found_free_var(self, var: Expr, var_t: Tracer):
-    super(EvalJvp, self).found_free_var(var, var_t)
-    self.values[id(var)] = (var_t, 0.)
-
-  def get_results(self, func: Function):
-    res_and_tan = [self.values[id(b)] for b in func.results]
-    res, res_tan = unzip(res_and_tan)
-    return tuple(res + res_tan)
-
-
 def jvp(func: Callable) -> Callable[..., Function]:
   """
   Args:
@@ -265,9 +153,6 @@ def jvp(func: Callable) -> Callable[..., Function]:
   """
 
   def wrapped_jvp(*args_and_tangents: Sequence[Value]):
-    if Globals.use_evaluators:
-      eval_res = EvalJvp.evaluate_user_function(func, args_and_tangents)
-      return eval_res
     assert len(args_and_tangents) % 2 == 0
     nr_args = len(args_and_tangents) // 2  # Arguments expected
     args = args_and_tangents[0:nr_args]

@@ -43,8 +43,6 @@ class Globals(object):
   variable_id = itertools.count()  # Unique ids for variables
   function_id = itertools.count()  # Unique ids for functions (for JIT)
   scope_nesting_depth = 0
-  use_evaluators = int(os.environ.get("MINI_JAX_INLINE_EVALUATORS", 0))
-  evaluator = None  # type: 'Evaluator'
 
   @staticmethod
   def reset():
@@ -52,7 +50,6 @@ class Globals(object):
     Globals.variable_id = itertools.count()
     Globals.function_id = itertools.count()
     Globals.scope_nesting_depth = 0
-    Globals.evaluator = None
 
 
 class ExprType(object):
@@ -251,13 +248,6 @@ class Expr(object):
     return do_visit(self)
 
   @staticmethod
-  def make_memoized_expr_evaluator(memo: Dict['Expr', Value]) -> Callable[['Expr'], Value]:
-    def eval_expr(e: 'Expr') -> Value:
-      return e.visit_expr(lambda e, args_v: Expr.eval_std_operator(e.operator, e.params, args_v),
-                          memo=memo)
-    return eval_expr
-
-  @staticmethod
   def three_address_code(elst: List['Expr']) -> Tuple[List[Tuple[str, 'Expr']],
                                                       List['Expr']]:
     """Converts a list of `Expr` to 3-address-codes.
@@ -307,7 +297,7 @@ class Expr(object):
         # Put the true_args and false_args among parameters, make it easier to read
         params = dict(**params)
         params["pred_arg"] = args[0]
-        params["true_args"] = args[1:1+len(params["true_func"].invars)]
+        params["true_args"] = args[1:1 + len(params["true_func"].invars)]
         params["false_args"] = args[1 + len(params["true_func"].invars):]
         args = []
       pp_args = pp_str(" ".join(map_list(str, args)))
@@ -334,7 +324,7 @@ class Function(object):
     a tuple.
 
     Args:
-      invars: the variables that occur in the body, including free variables.
+      invars: the variables that occur in the results, including free variables.
       results: a list of Expr that depedent only on the Vars in `invars`.
     """
     self.results = results
@@ -356,9 +346,9 @@ class Function(object):
 
   @staticmethod
   def trace_user_function(func: Callable,
-                          args_v: List[Value],
-                          use_evaluator=False) -> Tuple['Function', Sequence['Tracer']]:
-    """Trace a user function given some types for the arguments.
+                          args_v: List[Value]
+                          ) -> Tuple['Function', Sequence['Tracer']]:
+    """Trace a user function given values for the arguments.
 
     Args:
       args_v: the values corresponding to the `func` arguments. May be Python
@@ -370,16 +360,10 @@ class Function(object):
       to the environment values.
     """
     Globals.scope_nesting_depth += 1
-    evaluator = Globals.evaluator
     try:
       scope_nesting_depth = Globals.scope_nesting_depth
       args_typ = map_list(Tracer.val_to_type, args_v)
       args_t = map_tuple(Tracer.new_var_tracer, args_typ)
-      if use_evaluator and evaluator is not None:
-        evaluator.declare_vars([a_t.expr for a_t in args_t], args_v)
-
-      if not use_evaluator:
-        Globals.evaluator = None
       res = func(*args_t)
       if not isinstance(res, tuple):
         res = (res,)
@@ -396,8 +380,6 @@ class Function(object):
           freevars_env.append(env_t)
 
       func_f = Function([v_t.expr for v_t in args_t] + freevars, res_e)
-      if use_evaluator and evaluator is not None:
-        return evaluator.get_results(func_f, args_v + freevars_env)
       return func_f, freevars_env
     finally:
       Globals.scope_nesting_depth -= 1
@@ -410,8 +392,8 @@ class Function(object):
     """Runs a traceable evaluator over a Function to produce transformed Function.
 
     This is the workhorse of composable transformations. Given an evaluator
-    that evaluates a `Function` with different semantics for operators and uses
-    only overloaded operations on the arguments, `trace_evaluator` returns
+    that evaluates a `Function` with special semantics for operators and uses
+    only overloaded operations on the arguments, returns
     the transformed `Function`.
 
     Args:
@@ -424,11 +406,11 @@ class Function(object):
     Returns:
       a transformed Function.
     """
-    args_typ = [iv.etype for iv in self.invars]  # Start with the current arg types
+    args_typ = [iv.etype for iv in
+                self.invars]  # Start with the current arg types
     if extra_args_typ is not None:
       args_typ += extra_args_typ
     args_t = map_tuple(Tracer.new_var_tracer, args_typ)
-
     res_t = evaluator(self, *args_t)
     if not isinstance(res_t, tuple):
       res_t = (res_t,)
@@ -440,13 +422,14 @@ class Function(object):
     """The result type of the function.
     The result type is a tuple iff there are more than 1 bodies.
     """
-    res = [body.etype for body in self.results]
+    res = [result.etype for result in self.results]
     return res[0] if len(res) == 1 else res
 
   def make_evaluator(self,
                      in_args_v: Sequence[Value],
                      eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
-                     eval_operator: Callable[[Operator, Dict, Sequence[Value]], Value] = None,
+                     eval_operator: Callable[
+                       [Operator, Dict, Sequence[Value]], Value] = None,
                      **eval_params):
     """Make a memoized expression evaluator for this Function.
     Args:
@@ -466,38 +449,13 @@ class Function(object):
     for iv, v in zip(self.invars, in_args_v):
       memo[id(iv)] = v
 
-    if eval_expr is None:
-      eval_expr_visitor = lambda e, args_v: eval_operator(e.operator, e.params, args_v,
-                                                  **eval_params)
-    else:
-      eval_expr_visitor = lambda e, args_v: eval_expr(e, args_v, **eval_params)
+    def eval_expr_visitor(e, args_v):
+      if eval_expr is None:
+        return eval_operator(e.operator, e.params, args_v, **eval_params)
+      else:
+        return eval_expr(e, args_v, **eval_params)
 
     return (lambda e: e.visit_expr(eval_expr_visitor, memo=memo))
-
-
-  def evaluate(self,
-               in_args_v: Sequence[Value],
-               eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
-               eval_operator: Callable[
-                 [Operator, Dict, Sequence[Value]], Value] = None,
-                     **eval_params):
-    """Evaluates a function's results, given an operator evaluator and values for invars.
-    Args:
-      in_args_v: the values for the invars.
-      eval_expr: an evaluator to be called (once) for each sub-expression,
-        given values for its arguments.
-      eval_operator: an evaluator to be called (once) for each operator,
-        given values for its arguments. Exactly one of `eval_expr` and
-        `eval_operator` must be given.
-      eval_params: keyword parameters to be passed to the eval functions.
-
-    Returns:
-      the list of values corresponding to the function results
-    """
-    eval = self.make_evaluator(in_args_v, eval_expr=eval_expr, eval_operator=eval_operator,
-                               **eval_params)
-    return [eval(res) for res in self.results]
-
 
 
 # An environment is a sequence of pairs of variables and the tracing values
@@ -555,8 +513,6 @@ class Tracer(object):
     else:
       assert False, "{}".format(v)
 
-
-
   @staticmethod
   def new_var_tracer(etype: ExprType) -> 'Tracer':
     return Tracer.build(Operator.VAR,
@@ -586,8 +542,6 @@ class Tracer(object):
         else:
           new_v = Expr(Operator.VAR, (), etype=a_t.expr.etype,
                        id=next(Globals.variable_id))
-        if Globals.use_evaluators:
-          Globals.evaluator.found_free_var(new_v, a_t)
         env.append((new_v, a_t))
         args_e.append(new_v)
 
@@ -612,8 +566,6 @@ class Tracer(object):
     args_e, args_env = Tracer.closure_convert(args_t,
                                               Globals.scope_nesting_depth)
     expr = Expr(op, tuple(args_e), etype=etype, **params)
-    if Globals.evaluator:
-      Globals.evaluator.eval_expr(expr)
     return Tracer(expr, Globals.scope_nesting_depth, args_env)
 
   @staticmethod
@@ -681,8 +633,10 @@ class Ops(object):
               false_func: Callable, false_args: Sequence[Value]
               ) -> Sequence[Value]:
     # Collect the branch functions
-    true_func_f, true_func_env = Function.trace_user_function(true_func, true_args)
-    false_func_f, false_func_env = Function.trace_user_function(false_func, false_args)
+    true_func_f, true_func_env = Function.trace_user_function(true_func,
+                                                              true_args)
+    false_func_f, false_func_env = Function.trace_user_function(false_func,
+                                                                false_args)
     assert str(true_func_f.result_type()) == str(false_func_f.result_type()), (
       "{} != {}".format(true_func_f.result_type(), false_func_f.result_type()))
     return Expr.eval_std_operator(
@@ -692,132 +646,6 @@ class Ops(object):
       tuple(itertools.chain([to_test],
                             true_args, true_func_env,
                             false_args, false_func_env)))
-
-
-class Evaluator(object):
-
-  def __init__(self, outer: 'Evaluator', name: str = "Nop"):
-    self.outer = outer
-    self.name = name
-    self.depth = self.outer.depth + 1 if self.outer else 0
-
-    self.values = {}  # Map id(expr) to values
-    self.id_to_expr = {}
-
-    self.freevars = []  # List of values for the freevars
-
-
-  def __repr__(self):
-    return "{}/{}".format(self.name, self.depth)
-
-  def prepare_args(self, args_post_transform: Sequence[Value]):
-    return args_post_transform
-
-  def set_value(self, expr: Expr, val: Value):
-    print("{}: set expr value {}({}) to {}".format(self, expr, id(expr), val))
-    assert id(expr) not in self.values
-    self.values[id(expr)] = val
-
-  def declare_vars(self, invars: Sequence[Expr],
-                   args_v: Sequence[Value]):
-    assert len(invars) == len(args_v)
-    for i, v in enumerate(invars):
-      self.set_value(v, args_v[i])
-
-
-  @classmethod
-  def evaluate_user_function(cls, func: Callable,
-                             args_post_transform: Sequence[Value]):
-    outer = Globals.evaluator
-    evaluator = cls(outer)
-    Globals.evaluator = evaluator
-    Globals.scope_nesting_depth += 1
-    print("{}: evaluate_user_function on args {}".format(evaluator, args_post_transform))
-    args_v = evaluator.prepare_args(args_post_transform)
-    try:
-      scope_nesting_depth = Globals.scope_nesting_depth
-      args_typ = map_list(Tracer.val_to_type, args_v)
-      args_t = map_tuple(Tracer.new_var_tracer, args_typ)
-      if evaluator is not None:
-        evaluator.declare_vars([a_t.expr for a_t in args_t], args_post_transform)
-
-      res = func(*args_t)
-      if not isinstance(res, tuple):
-        res = (res,)
-
-      # res may contain literals, turn them into Tracer
-      res_t = tuple(Tracer.val_to_tracer(r) for r in res)
-
-      res_e, res_env = Tracer.closure_convert(res_t, scope_nesting_depth)
-
-      freevars = []
-      freevars_env = []
-      for v, env_t in res_env:
-        if v not in freevars:  # We may have a variable twice in an environement
-          freevars.append(v)
-          freevars_env.append(env_t)
-
-      func_f = Function([v_t.expr for v_t in args_t] + freevars, res_e)
-      if evaluator is not None:
-        return evaluator.get_results(func_f, list(args_v) + freevars_env)
-      return func_f, freevars_env
-    finally:
-      Globals.scope_nesting_depth -= 1
-      Globals.evaluator = outer
-
-
-  def transform_function_ev(self, func: Function) -> Function:
-    in_args_typ = [iv.etype for iv in func.invars]  # Start with the current arg types
-    args_typ = in_args_typ + self.additional_transform_args_typ(func)
-    print("{}: transform function".format(self))
-    args_t = map_tuple(Tracer.new_var_tracer, args_typ)
-    self.declare_vars(func.invars, args_t)
-
-    def visitor(e: Expr, args_v) -> Tuple[Value, Value]:
-      return self.eval_operator(e.operator, e.params, args_v)
-
-    res_t = [body.visit_expr(visitor, memo=self.values)
-             for body in func.results]
-
-    # res may contain literals, turn them into Tracer
-    res_t = [Tracer.val_to_tracer(r) for r in res_t]
-    func_f = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
-    return self.get_results(func_f, list(args_t))
-
-  def additional_transform_args_typ(self, func: Function):
-    return []
-
-  def eval_expr(self, expr: Expr) -> None:
-    # Lookup the values for all the arguments
-    if not all([id(a) in self.values for a in expr.args]):
-      ids = [id(a) for a in expr.args]
-      assert False
-    args_v = [self.values[id(a)] for a in expr.args]
-    assert not id(expr) in self.values
-    try:
-      Globals.evaluator = self.outer
-      Globals.scope_nesting_depth -= 1 ## Do we need this?
-      if expr.operator == Operator.VAR:
-        return # TODO(fix this)
-      val = self.eval_operator(expr.operator, expr.params, args_v)
-      if val is None:
-        val = expr
-    finally:
-      Globals.evaluator = self
-      Globals.scope_nesting_depth += 1
-    self.set_value(expr, val)
-
-
-  def found_free_var(self, var: Expr, var_t: Tracer):
-    self.freevars.append(var_t)
-    self.set_value(var, var_t)
-
-
-  def eval_operator(self, op: Operator, params, args_v: Sequence[Value]) -> None:
-    pass
-
-  def get_results(self, func: Function, args_v: Sequence[Value]):
-    return func
 
 
 ############ TRACE ##############
@@ -830,14 +658,9 @@ def trace(func: Callable) -> Callable[..., Function]:
   def wrapped_trace(*args: Sequence[Value]):
     assert Globals.scope_nesting_depth == 0, "Outside any other tracers"
     Globals.reset()  # Produces more deterministic results
-    if Globals.use_evaluators:
-      func_f, func_f_env = Evaluator.evaluate_user_function(func, args)
-      assert not func_f_env  # We usually trace only outside other transformations
-      return func_f
-    else:
-      func_f, func_f_env = Function.trace_user_function(func, args)
-      assert not func_f_env  # We usually trace only outside other transformations
-      return func_f
+    func_f, func_f_env = Function.trace_user_function(func, args)
+    assert not func_f_env  # We usually trace only outside other transformations
+    return func_f
 
   return wrapped_trace
 

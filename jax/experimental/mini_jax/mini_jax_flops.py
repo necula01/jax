@@ -44,7 +44,7 @@ from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Evaluator, Globals
+  Value
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -54,8 +54,8 @@ FlopsVal = Value  # In principle, we could count more things
 class Flops(object):
   """Methods related to counting flops."""
 
-  def eval_flops_func(self, func: Function, *args_v: Sequence[Value]
-                      ) -> Sequence[Value]:
+  def eval_function(self, func: Function, *args_v: Sequence[Value]
+                    ) -> Sequence[Value]:
     # Prepare an expression evaluator for when flops are data-dependent
     eval_std_expr = func.make_evaluator(args_v,
                                         eval_operator=Expr.eval_std_operator)
@@ -65,14 +65,15 @@ class Flops(object):
     # ensure we only count once, we pass a mutable accumulator to the visitor,
     # instead of carrying the flops with the expression values.
     accum_flops = [0.]  # type: List[Value]  - flops accumulator
-    func.evaluate(args_v, eval_expr=self.eval_flops_expr_no_args,
+    eval_flops_expr = func.make_evaluator(args_v, eval_expr=self.eval_expr,
                   eval_std_expr=eval_std_expr,
                   accum_flops=accum_flops)
+    _ = [eval_flops_expr(result) for result in func.results]
     return accum_flops[0]
 
-  def eval_flops_expr_no_args(self, e: Expr, args_v: Sequence[FlopsVal],
-                              eval_std_expr: Callable[[Expr], Value] = None,
-                              accum_flops: List[FlopsVal] = None) -> FlopsVal:
+  def eval_expr(self, e: Expr, args_v: Sequence[FlopsVal],
+                eval_std_expr: Callable[[Expr], Value] = None,
+                accum_flops: List[FlopsVal] = None) -> FlopsVal:
     """Computes the flops, excluding the flops of the arguments.
 
     Will be called one per distinct Expr object.
@@ -97,7 +98,7 @@ class Flops(object):
 
     if e.operator == Operator.JIT_CALL:
       func = e.params["func"]
-      flops_func = func.transform_function(Flops().eval_flops_func)
+      flops_func = func.transform_function(self.eval_function)
       # Perhaps the flops of the function is data-independent
       if flops_func.results[-1].operator == Operator.LITERAL:
         # Add in the cost of the call itself
@@ -112,9 +113,9 @@ class Flops(object):
 
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
-      true_func_flops = true_func_f.transform_function(Flops().eval_flops_func)
+      true_func_flops = true_func_f.transform_function(self.eval_function)
       false_func_f = e.params["false_func"]
-      false_func_flops = false_func_f.transform_function(Flops().eval_flops_func)
+      false_func_flops = false_func_f.transform_function(self.eval_function)
       # If both branches have the same flops count, lift it out
       if (true_func_flops.results[-1].operator == Operator.LITERAL and
           false_func_flops.results[-1].operator == Operator.LITERAL and
@@ -144,8 +145,7 @@ def count_flops(func: Callable) -> Callable:
 
   def wrapped_flops(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args)
-    res_flops = Flops().eval_flops_func(
-      func_f, *(itertools.chain(args, func_f_env)))
+    res_flops = Flops().eval_function(func_f, *args, *func_f_env)
     return res_flops
 
   return wrapped_flops

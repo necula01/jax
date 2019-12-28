@@ -65,7 +65,7 @@ from typing import Dict, Callable, Optional, Sequence
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Evaluator, Globals
+  Value
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -73,9 +73,8 @@ from jax.experimental.mini_jax.mini_jax_util import map_list
 class Grad(object):
   """Methods related to backward differentiation."""
 
-  @staticmethod
-  def _eval_vjp_func(func: Function,
-                     *args_out_adj: Sequence[Value]) -> Sequence[Value]:
+  def eval_function(self, func: Function,
+                    *args_out_adj: Sequence[Value]) -> Sequence[Value]:
     """Evaluates the function and its vector-Jacobian product.
 
     Care must be taken bound the work by a constant-factor over the number
@@ -112,10 +111,10 @@ class Grad(object):
           [reverse_expr_graph(a, e) for a in e.args]
 
     adjoints = {}  # Dict[int, Value] - the accumulated adjoints
-    for body, body_out_adj in zip(func.results, out_adj):
-      reverse_expr_graph(body, None)
-      # The body may occur more than once
-      adjoints[id(body)] = adjoints.get(id(body), 0.) + body_out_adj
+    for result, result_out_adj in zip(func.results, out_adj):
+      reverse_expr_graph(result, None)
+      # The result may occur more than once
+      adjoints[id(result)] = adjoints.get(id(result), 0.) + result_out_adj
 
     # Build a standard evaluator, used to evaluate lazily the values that are
     # needed from the forward pass.
@@ -130,7 +129,7 @@ class Grad(object):
       [visit_expr_backwards(p) for p in parents[id_e]]
       # Now that all parents have been processed, our adjoint is ready
       e_adj = adjoints[id(e)]
-      Grad.add_subexpr_adjoints(e, e_adj, adjoints, eval_std_expr)
+      self.add_subexpr_adjoints(e, e_adj, adjoints, eval_std_expr)
 
     var_adjoints = {}
     for lvar in var_leaves:
@@ -143,8 +142,7 @@ class Grad(object):
     else:
       return tuple(res)
 
-  @staticmethod
-  def add_subexpr_adjoints(e: Expr,
+  def add_subexpr_adjoints(self, e: Expr,
                            out_adj: Value,
                            adjoints: Dict[int, Value],
                            eval_std_expr: Callable[[Expr], Value]):
@@ -191,7 +189,7 @@ class Grad(object):
     elif e.operator == Operator.JIT_CALL:
       """See comments at top of file."""
       func = e.params['func']
-      vjp_func = Grad._prepare_function_vjp(func)
+      vjp_func = self.transform_function(func)
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
       args_v = map_list(eval_std_expr, e.args) + out_adj
@@ -205,9 +203,9 @@ class Grad(object):
     elif e.operator == Operator.COND_GE:
       """See comments at top of file."""
       true_func_f = e.params["true_func"]
-      true_func_vjp = Grad._prepare_function_vjp(true_func_f)
+      true_func_vjp = self.transform_function(true_func_f)
       false_func_f = e.params["false_func"]
-      false_func_vjp = Grad._prepare_function_vjp(false_func_f)
+      false_func_vjp = self.transform_function(false_func_f)
       # Expand the branches to return the adjoints for all the true_args and false_args
       # We actually do not compute the adjoint for the predicate; it is 0
       zero = Expr(Operator.LITERAL, (), etype=ExprType(float), val=0.)
@@ -236,8 +234,7 @@ class Grad(object):
     else:
       raise NotImplementedError
 
-  @staticmethod
-  def _prepare_function_vjp(func: Function) -> Function:
+  def transform_function(self, func: Function) -> Function:
     """Generates the VJP for a Function.
 
     Args:
@@ -247,8 +244,8 @@ class Grad(object):
       len(func.invars) outputs, for the input adjoints.
     """
     return func.transform_function(
-      Grad._eval_vjp_func,
-      extra_args_typ=[body.etype for body in func.results])
+      self.eval_function,
+      extra_args_typ=[result.etype for result in func.results])
 
 
 def grad(func: Callable) -> Callable[..., Function]:
@@ -264,8 +261,7 @@ def grad(func: Callable) -> Callable[..., Function]:
     func_f, func_f_env = Function.trace_user_function(func, args)
     assert len(func_f.results) == 1, (
       "grad is only defined for functions that return a single result")
-    res_grad = Grad._eval_vjp_func(
-      func_f, *tuple(itertools.chain(args, func_f_env, [1.])))
+    res_grad = Grad().eval_function(func_f, *args, *func_f_env, 1.)
     # Drop adjoints for the freevars
     # TODO: this is an ugly result of the convention that the result is either tuple or value
     if isinstance(res_grad, tuple):
