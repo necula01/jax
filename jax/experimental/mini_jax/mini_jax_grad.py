@@ -248,17 +248,18 @@ class Grad(object):
       extra_args_typ=[result.etype for result in func.results])
 
 
-def grad(func: Callable) -> Callable[..., Function]:
+def grad(func: Callable, abstract: bool = True) -> Callable[..., Function]:
   """Computes the gradient of a function.
 
   Args:
     func: a function of n-scalar arguments, with a single output.
+    abstract: whether to force tracers to be abstract.
   Returns: a function that when applied to `n` `func` arguments, returns the `n` partial
     derivatives of the function.
   """
 
   def wrapped_grad(*args: Sequence[Value]):
-    func_f, func_f_env = Function.trace_user_function(func, args)
+    func_f, func_f_env = Function.trace_user_function(func, args, abstract=abstract)
     assert len(func_f.results) == 1, (
       "grad is only defined for functions that return a single result")
     res_grad = Grad().eval_function(func_f, *args, *func_f_env, 1.)

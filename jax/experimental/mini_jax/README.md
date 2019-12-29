@@ -2,9 +2,10 @@ Mini-JAX: a pedagogical model of JAX tracing and transformations
 ===============================================================
 
 This project started with the goal to provide a (loose) model of how JAX
-works: tracing Python functions using abstract evaluation into a typed
-intermediate form on which one can build composable transformations (GRAD, JVP),
-in conjunction with JIT. It started as a learning project, and hopefully it can
+works: tracing Python functions using a combination of concrete and abstract 
+evaluation into a typed intermediate form on which one can build composable 
+transformations (GRAD, JVP), in conjunction with JIT. 
+It started as a learning project, and hopefully it can
 be a teaching project also, for people who want to understand how JAX works 
 internally. In order to keep mini-JAX simple, a number of features
 and optimizations have been simplified or omitted:
@@ -12,28 +13,34 @@ and optimizations have been simplified or omitted:
 * JAX features that are included:
 
   * Tracing with a combination of static and dynamic arguments, including 
-    cases when values are captured from outer Python scopes. 
+    cases when values are captured from outer Python scopes. Tracing builds
+    an intermediate representation of the code. Tracing also carries concrete
+    Python values that are used to resolve control flow. 
   * JIT transformation is lazy, in the sense that applying transformations on
     the result of JIT results in the JIT function body being transformed. The
     actual compilation happens as late as possible.
-  * Conditionals as higher-order primitives.  
-  * All transformations are composable.  
+  * Conditionals as higher-order primitives.
+  * The following composable transformations: JVP (forward differentiation),
+    GRAD (reverse differentiation), FLOPS (a new toy transformation to estimate
+    the FLOPS cost of the code, without
+    actually running the computation, except as much as needed for when there
+    is data-dependent FLOPS.)   
   * Reverse differentiation (GRAD) is careful to ensure that the cost of the
     reverse differentiation is within a constant-factor of the cost of the forward
     computation.
-  * Forward differentiation (JVP).
-  * A new toy transformation to estimate the FLOPS cost of the code, without
-    actually running the computation, except as much as needed for when there
-    is data-dependent FLOPS.
+  * All transformations work with arbitrary Python control-flow, except when 
+    JIT is involved.    
   
 * Omitted JAX features and optimizations:
 
-  * In mini-JAX all transformations are performed after tracing the function 
-    to the intermediate language. This is called an "initial embeddeding" in JAX. 
-    In JAX, some transformations, e.g., JVP and VMAP, are performed online 
+  * In mini-JAX all transformations on a function are performed after tracing 
+    the function 
+    into the intermediate language. 
+    This is called an "initial embeddeding" in JAX. 
+    In real JAX, some transformations, e.g., JVP and VMAP, are performed online 
     as the JAXPR is generated (and often the JAXPR is not even materialized). 
-    This is an important feature that for now was left out of mini-JAX for 
-    simplicity. 
+    See below for a longer discussion of this difference between JAX and 
+    mini-JAX.
   * only the `float` type is supported and only a few arithmetic operators (`+`, `-`, 
     `*`, `**`). There are no tensors nor `numpy`.
   * no `scan`, `while_loop`.  
@@ -44,7 +51,7 @@ and optimizations have been simplified or omitted:
     primitives).
   * no support for `static_argnums` (for JIT) and `argnums` (for GRAD), although
     this can be obtained with partial application functions.
-  * there is no caching of transformations or compilations.
+  * there is no caching of transformations.
   * there is no constant folding, beyond the part that is done by Python, 
     outside the tracer's control.
   * perhaps other missing features?
@@ -68,37 +75,43 @@ input `arg` given a perturbation of the input `arg_tan`. For example:
 ```
 Then `jvp(func0)(a, a_tan)` evaluates to `2 * a * a_tan`.
 
-JAX performs function transformations on an internal representation of
-the function, called JAXPR (JAX expressions). (Mini-JAX performs all 
-transformations that way, but in real JAX some transformations, e.g., JVP
-are performed online, during tracing, and no JAXPR is materialized.)
-For simplicity, in this write-up (and in mini-JAX) we will not use specific details of
-how JAXPR are implemented and are going to simply use symbolic expressions
-`Expr` with constructs such as `Var(v)` (for variables, where `v` is some
-internal unique identifier), `Literal(3.0)`, `Add(e1, e2)`, etc. For specific
+Mini-JAX performs all function transformations on an internal representation
+of the function, called `Expr` (symbolic expressions). In real-JAX there is a similar
+data structure called JAXPR (JAX expressions); for specific
 details in JAXPRs, see "Understanding JAXPR" writeup. 
+In real-JAX some transformations
+are fused with the tracing pass. We discuss this difference further below, for
+now we assume that we always trace to expressions then transform. 
+The symbolic expressions have constructs such as `Var(v)` (for variables, 
+where `v` is some
+internal unique identifier), `Literal(3.0)`, `Add(e1, e2)`, etc.  
 
 To obtain the symbolic expression for the function to be transformed,
 JAX does not try to parse the source code of the function.
 Instead, it executes the function using special tracer objects as arguments. 
-A tracer object has a type, and a symbolic expression that denotes the 
-current value of the tracer. The tracer object also overloads
+A tracer object has a type and a symbolic expression that denotes the 
+current value of the tracer. In many cases the tracer also carries the actual 
+concrete value. 
+The tracer object overloads
 Python operators such that it gets notified when the Python interpreter
 tries to use the tracer object in an operation. The tracer implementation of 
-operators builds symbolic expressions corresponding to the computation and
-return tracers. 
+operators
+builds symbolic expressions corresponding to the operation and symbolic 
+expressions for the arguments. The result is returned as a tracer. 
 
-A pseudo-code for how the tracing is invoked is roughly:
-```
-  arg_typ: ExprType = val_to_type(arg)    # Abstract 'arg' to type, e.g., 'float', or 'float[3,4]'   
-  in_t: Tracer = new_var_tracer(arg_typ)  # Create a tracer initialized to a Var expression 
+
+
+The pseudo-code for how the tracing is invoked is roughly:
+``` 
+  in_t: Tracer = new_var_tracer_from_val(arg)  # Create a tracer initialized to a Var expression 
 ``` 
 Now we simply let the Python interpreter execute the user function: 
 ```
   primal_res_t: Tracer = traceable_user_func(in_t)
 ```
-The result `primal_res_t.expr` is a symbolic representation of the computation that was performed
-on tracers by the user function. For a user function to be adequate for such tracing it must: 
+The result `primal_res_t.expr` is a symbolic representation of the computation 
+that was performed on tracers by the user function. 
+For a user function to be adequate for such tracing it must: 
 
 * use the arguments only with a designated set of operators (that
   have been overloaded.) In mini-JAX, this are `+`, `-`, `*`, `**` with integer 
@@ -112,7 +125,7 @@ on tracers by the user function. For a user function to be adequate for such tra
   and the result should be returned through the return value. 
 
 Normally, JAX
-traces through Python control flow and function calls. For example, when tracing 
+traces through function calls, including nested ones. For example, when tracing 
 the function `func1` below::
 ```
   def func1(x):
@@ -121,12 +134,19 @@ the function `func1` below::
       return y + x * 4 + z
     return inner(x * 3)
 ```    
-the resulting JAXPR is essentially `x * 3 + x * 4 + x * 2` (tracers are passed
+the resulting expression is essentially `x * 3 + x * 4 + x * 2` (tracers are passed
 transparently through variable assignments, function calls, and lexical closures). 
-In particular, in this form of tracing, all the function calls are inlined. Loops and
-control flow are also inlined:
+In particular, in this form of tracing, all the function calls are inlined. 
+
+### Handling control-flow with concolic tracing
+
+For control-flow the situation is a bit more complicated. Loops and control flow 
+that depend only on constants are inlined by the Python interpreter 
+(in general, all operations that do not depend on the function arguments
+are performed directly by the Python interpreter without any involvement, 
+or even awareness, from the tracing machinery):
 ```
-  def func1(x):
+  def func_static_control_flow(x):
     for i in range(4):
       if i % 2 == 0:
         x = x * 2
@@ -135,6 +155,42 @@ control flow are also inlined:
     return x
 ```
 The above function traces to `(((x * 2) * 3) * 2) * 3`. 
+
+Consider the followig control-flow that depends on function arguments:
+```
+  def func_dyn_control_flow(x):
+    z = x * 2
+    if z >= 0.:
+      return z * 3
+    else:
+      return z * 4
+```
+
+In order to handle this, JAX (and mini-JAX) tracers carry not only the 
+symbolic expression denoting the lineage of the current value, but also the 
+actual Python value itself. To achieve this, tracing happens only once 
+the actual arguments are available: `jvp(func_dyn_control_flow, 3, 1)` 
+(here `3` is the value of the argument `x` at which the JVP is being calculated.)
+
+The tracer constructed for `x` will have a `Var` symbolic expression and also 
+will be aware of the concrete value `3`. In the computation `x * 2` the tracing 
+machinery will construct the symbolic expression `x * 2` and will compute also 
+the value `6`. The concrete values of the tracers will be used only for 
+resolving control flow. The body of the function above will be traced to 
+the symbolic expression `(x * 2) * 3`. For a negative concrete value of `x`, we
+would obtain the symbolic expression `(x * 2) * 4`. This form of combining
+concrete evaluation with symbolic evaluation is called *concolic* tracing. 
+
+Carrying concrete values is more expensive: the tracer needs to perform 
+each operation as it is traced. This may be more expensive than just building 
+the symbolic expression, e.g., when the operands are large tensors. In mini-JAX
+all transformations have an `abstract` keyword parameter, default to `True`, 
+to control whether the parameters are forced to be be abstract (no concrete value). 
+This default needs to be changed whenever the traced function has control-flow
+that needs to be resolved based on concrete values. 
+
+In real JAX it depends on the transformation whether the tracers carry concrete
+values. 
 
 ### Composable transformations through traceable interpreters
 

@@ -337,6 +337,150 @@ class MiniJaxTest(jtu.JaxTestCase):
 
     self.assertAllClose(func_equiv(5.), mj.jit(func)(5.), check_dtypes=True)
 
+  def test_trace_if_ge(self):
+    """Test tracing through "if" """
+    def func(x):
+      z = x * 2.
+      if z >= 4.:
+        return z + 3.
+      else:
+        return z - 3.
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = add n0 3.0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(2.).pp()))
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = sub n0 3.0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(-1.9).pp()))
+
+  def test_trace_if_gt(self):
+    """Test tracing through "if" """
+
+    def func(x):
+      z = x * 2.
+      if z > 4.:
+        return z + 3.
+      else:
+        return z - 3.
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = add n0 3.0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(2.01).pp()))
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = sub n0 3.0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(-2.).pp()))
+
+  def test_trace_cond_if(self):
+    """Test tracing through "if" under "cond" """
+    def func(x):
+      z = x * 2.
+      def true_f(xt):
+        if xt >= 0.:
+          return xt + 3.
+        else:
+          return xt - 3.
+      return mj.Ops.cond_ge(z, true_f, (z,), lambda _: 0., (0.,))
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = cond_ge[ false_args=(0.0,)
+                false_func={lambda v2.
+                             # v2: float
+                             in 0.0}
+                pred_arg=n0
+                true_args=('n0',)
+                true_func={lambda v1.
+                            # v1: float
+                            n0 = add v1 3.0
+                            in n0} ] 
+  in n1}
+    """,
+                                      str(mj.trace(func, abstract=False)(3.).pp()))
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = cond_ge[ false_args=(0.0,)
+                false_func={lambda v2.
+                             # v2: float
+                             in 0.0}
+                pred_arg=n0
+                true_args=('n0',)
+                true_func={lambda v1.
+                            # v1: float
+                            n0 = sub v1 3.0
+                            in n0} ] 
+  in n1}
+    """,
+                                      str(mj.trace(func, abstract=False)(-3.).pp()))
+
+  def test_trace_jit_if_static(self):
+    """Test tracing through "if" on static args under "jit" """
+    def func(x):
+      z = x * 2.
+      def inner(y):
+        if z >= 0.:  # Conditional is on the concrete parameter
+          return y + 3.
+        else:
+          return y - 3.
+      return mj.jit(inner)(z)
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = add v1 3.0
+                        in n0} ] n0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(3.).pp()))
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0.
+  # v0: float
+  n0 = mul v0 2.0
+  n1 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = sub v1 3.0
+                        in n0} ] n0
+  in n1}
+    """, str(mj.trace(func, abstract=False)(-3.).pp()))
+
+  def test_trace_jit_if_dynamic(self):
+    """Test tracing through "if" on dynamic args under "jit" """
+    def func(x):
+      z = x * 2.
+      def inner(y):
+        if y >= 0.:  # Conditional is on the abstract parameter
+          return y + 3.
+        else:
+          return y - 3.
+      return mj.jit(inner)(z)
+
+    with self.assertRaisesRegexp(TypeError,
+                            "Boolean test not supported on abstract values"):
+      mj.trace(func)(3.).pp()
 
 
 class ComparativeJaxTest(jtu.JaxTestCase):

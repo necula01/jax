@@ -143,10 +143,11 @@ class Jvp(object):
 
     raise NotImplementedError
 
-def jvp(func: Callable) -> Callable[..., Function]:
+def jvp(func: Callable, abstract: bool = True) -> Callable[..., Function]:
   """
   Args:
     func: a function of n-scalar arguments.
+    abstract: whether to force tracer arguments to be abstract.
   Returns: a function that when applied to `func` arguments, followed by other
     `n` tangent arguments, returns a sequence of the function's results
     followed by their tangents.
@@ -157,7 +158,8 @@ def jvp(func: Callable) -> Callable[..., Function]:
     nr_args = len(args_and_tangents) // 2  # Arguments expected
     args = args_and_tangents[0:nr_args]
     # Trace the function on the arguments only
-    func_f, func_f_env = Function.trace_user_function(func, args)
+    func_f, func_f_env = Function.trace_user_function(func, args,
+                                                      abstract=abstract)
     if func_f_env:
       # Add also arguments for the freevars, with 0. tangents because for the point of view
       # of the current JVP we are only differentiating w.r.t. the arguments, not the freevars.

@@ -36,6 +36,7 @@ from jax.experimental.mini_jax.mini_jax_util import (
 
 TA = typing.TypeVar('TA')
 TB = typing.TypeVar('TB')
+
 Value = Union[Any, 'Tracer']  # Either a Python value, or a Tracer
 
 
@@ -79,6 +80,9 @@ class Operator(enum.Enum):
   MUL = "mul"  # binary, no params
   POW = "pow"
   """Exponentiation, unary, has one param {pow: int}."""
+
+  GE = "ge"  # binary, no params
+  GT = "gt"
 
   JIT_CALL = "jit_call"
   """A jit-wrapped Function. One params {func: Function}. Has as many arguments
@@ -158,6 +162,11 @@ class Expr(object):
       if args_et[0].dtype is float:
         return args_et[0]
       assert False
+    if op in (Operator.GE, Operator.GT):
+      arg1_et, arg2_et = args_et
+      if arg1_et.dtype is float and arg2_et.dtype is float:
+        return bool
+      assert False, "{} {} {}".format(op, arg1_et, arg2_et)
     raise NotImplementedError
 
   @staticmethod
@@ -173,7 +182,7 @@ class Expr(object):
       args_v: the evaluated args
     """
     if op == Operator.VAR:
-      assert False
+      assert False  # The VARs are added to the memo table before evaluation
     if op == Operator.LITERAL:
       return params["val"]
     if op == Operator.ADD:
@@ -184,13 +193,17 @@ class Expr(object):
       return args_v[0] * args_v[1]
     if op == Operator.POW:
       return args_v[0] ** params["pow"]
+    if op == Operator.GE:
+      return args_v[0] >= args_v[1]
+    if op == Operator.GT:
+      return args_v[0] > args_v[1]
     if op == Operator.PROJECTION:
       return args_v[0][params["idx"]]
     if op == Operator.JIT_CALL:
       func = params["func"]
       assert len(args_v) == len(func.invars)
-      all_constants = all([not isinstance(a, Tracer) for a in args_v])
-      if all_constants:  # Arguments are all Python values: JIT and execute
+      all_concrete = all([not isinstance(a, Tracer) for a in args_v])
+      if all_concrete:  # Arguments are all Python values: JIT and execute
         return Jit.compile_and_execute(func, args_v)
 
       args_t = map_list(Tracer.val_to_tracer, args_v)
@@ -202,8 +215,8 @@ class Expr(object):
       true_func_f = params["true_func"]
       false_func_f = params["false_func"]
       assert len(true_func_f.results) == len(false_func_f.results)
-      all_constants = all([not isinstance(a, Tracer) for a in args_v])
-      if all_constants:  # Arguments are all Python values: evaluate now
+      all_concrete = all([not isinstance(a, Tracer) for a in args_v])
+      if all_concrete:  # Arguments are all Python values: evaluate now
         if args_v[0] >= 0.:
           # We use the jitter to evaluate the branch
           return Jit.compile_and_execute(
@@ -346,13 +359,17 @@ class Function(object):
 
   @staticmethod
   def trace_user_function(func: Callable,
-                          args_v: List[Value]
+                          args_v: List[Value],
+                          abstract: bool = True
                           ) -> Tuple['Function', Sequence['Tracer']]:
     """Trace a user function given values for the arguments.
 
     Args:
+      func: a Python user function to trace using Tracer arguments.
       args_v: the values corresponding to the `func` arguments. May be Python
         values, or Tracer values.
+      abstreact: whether to force arguments to be abstract (no constants carried
+        in the Tracer).
 
     Returns: a pair of a closed `Function` along with a list of `Tracer`s
       corresponding to computations from shallower scopes used in the function
@@ -362,8 +379,8 @@ class Function(object):
     Globals.scope_nesting_depth += 1
     try:
       scope_nesting_depth = Globals.scope_nesting_depth
-      args_typ = map_list(Tracer.val_to_type, args_v)
-      args_t = map_tuple(Tracer.new_var_tracer, args_typ)
+      args_t = [Tracer.new_var_tracer_from_val(arg_v, abstract=abstract)
+                for arg_v in args_v]
       res = func(*args_t)
       if not isinstance(res, tuple):
         res = (res,)
@@ -410,7 +427,7 @@ class Function(object):
                 self.invars]  # Start with the current arg types
     if extra_args_typ is not None:
       args_typ += extra_args_typ
-    args_t = map_tuple(Tracer.new_var_tracer, args_typ)
+    args_t = map_tuple(Tracer.new_var_tracer_from_type, args_typ)
     res_t = evaluator(self, *args_t)
     if not isinstance(res_t, tuple):
       res_t = (res_t,)
@@ -464,22 +481,33 @@ Environment = Sequence[Tuple[Expr, 'Tracer']]
 
 
 class Tracer(object):
-  """A value to be used in lieu of actual Python values for tracing."""
+  """A value to be used in lieu of actual Python values for tracing.
+
+  A Tracer implements many Python operators. It carries a symbolic expression
+  representing the tracing value. It also carries information necessary for
+  separating tracer values from outer scopes.
+  """
 
   def __init__(self, expr: Expr,
                scope_nesting_depth: int,
-               env: Environment):
+               env: Environment,
+               concrete: Optional[Value] = None):
     """
     Args:
-      expr: the expression representing the traced value.
+      expr: the symbolic expression representing the traced value.
       scope_nesting_depth: the scope depth at which it was built. May be `None`
         for literals.
-      env: the environment for the expression, including additional free variables
-        and the tracers they were introduced for.
+      env: the environment for the expression: additional free variables
+        the appear in `expr` and the tracers they were introduced for.
+      concrete: an optional Python constant representing the actual concrete
+        Python value
+        for this Tracer. It is used for deciding conditionals. This may be
+        None for values computed from abstract function arguments (e.g., for jit).
     """
     self.expr = expr
     self.scope_nesting_depth = scope_nesting_depth
     self.env = env
+    self.concrete = concrete
 
   @staticmethod
   def val_to_tracer(v: Value) -> 'Tracer':
@@ -487,7 +515,8 @@ class Tracer(object):
     if isinstance(v, Tracer):
       return v
     v_et = Tracer.val_to_type(v)
-    return Tracer.build(Operator.LITERAL, dict(val=v), (), etype=v_et)
+    return Tracer.build(Operator.LITERAL, dict(val=v), (), etype=v_et,
+                        concrete=v)
 
   def __repr__(self):
     op = self.expr.operator  # Special-case some operators, for debugging
@@ -495,6 +524,8 @@ class Tracer(object):
       fmt = str(self.expr)
     else:
       fmt = op
+    if op != Operator.LITERAL and self.concrete is not None:
+      fmt = "{}={}".format(fmt, self.concrete)
     return str("Tr[{}/{}]".format(fmt, self.scope_nesting_depth))
 
   __str__ = __repr__
@@ -507,17 +538,36 @@ class Tracer(object):
     # Must be a constant
     assert isinstance(v, (int, float)), "{}".format(v)
     if isinstance(v, int):
-      raise NotImplementedError
+      raise NotImplementedError("integer constants not yet implemented")
     elif isinstance(v, float):
       return ExprType(float)
     else:
       assert False, "{}".format(v)
 
   @staticmethod
-  def new_var_tracer(etype: ExprType) -> 'Tracer':
+  def new_var_tracer_from_type(etype: ExprType) -> 'Tracer':
     return Tracer.build(Operator.VAR,
                         dict(id=next(Globals.variable_id)),
                         (), etype=etype)
+
+  @staticmethod
+  def new_var_tracer_from_val(v: Value, abstract=False) -> 'Tracer':
+    """Creates a new Tracer VAR from a Value.
+    Args:
+      v: either a Python constant, or a Tracer
+      abstract: whether to force it to be abstract (drop the concrete value).
+    """
+    v_typ = Tracer.val_to_type(v)
+    if abstract:
+      concrete = None
+    elif isinstance(v, Tracer):
+      concrete = v.concrete
+    else:
+      concrete = v
+    return Tracer.build(Operator.VAR,
+                        dict(id=next(Globals.variable_id)),
+                        (), etype=v_typ,
+                        concrete=concrete)
 
   @staticmethod
   def closure_convert(args_t: Sequence['Tracer'],
@@ -551,6 +601,7 @@ class Tracer(object):
   def build(op: str, params: Dict,
             args_t: Sequence['Tracer'],
             etype: Optional[ExprType] = None,
+            concrete: Optional[Value] = None
             ) -> 'Tracer':
     """Builds a Tracer for an operator applied to arguments.
 
@@ -560,13 +611,18 @@ class Tracer(object):
       args_t: the `Tracer`s for the arguments.
       etype: the optional `ExprType` for the `Expr` being built. If not given,
         then the typeis calculated through type checking.
+      concrete: an optional concrete Python value to carry with this Tracer.
     Returns:
       a `Tracer` at the current scope nesting depth.
     """
+    args_ct = [arg_t.concrete for arg_t in args_t]
     args_e, args_env = Tracer.closure_convert(args_t,
-                                              Globals.scope_nesting_depth)
+                                                       Globals.scope_nesting_depth)
     expr = Expr(op, tuple(args_e), etype=etype, **params)
-    return Tracer(expr, Globals.scope_nesting_depth, args_env)
+    if concrete is None and args_t and all([ct is not None for ct in args_ct]):
+      concrete = Expr.eval_std_operator(op, params, args_ct)
+    return Tracer(expr, Globals.scope_nesting_depth, args_env,
+                  concrete=concrete)
 
   @staticmethod
   def handle_tuple_result(res: 'Tracer'
@@ -624,6 +680,24 @@ class Tracer(object):
     if power == 1: return self
     return Tracer.build(Operator.POW, dict(pow=power), (self,))
 
+  # Comparison
+  def __ge__(self, other: Value):
+    return Tracer.build(Operator.GE, {}, (self, self.val_to_tracer(other)))
+
+  def __gt__(self, other: Value):
+    return Tracer.build(Operator.GT, {}, (self, self.val_to_tracer(other)))
+
+  def __nonzero__(self):
+    # TODO: when is this exactly called?
+    if self.concrete is not None:
+      assert self.expr.etype is bool
+      return self.concrete
+    else:
+      msg = "Boolean test not supported on abstract values"
+      raise TypeError(msg)
+
+  __bool__ = __nonzero__
+
 
 class Ops(object):
   """Special primitive operations that operate either on values of tracers"""
@@ -633,10 +707,16 @@ class Ops(object):
               false_func: Callable, false_args: Sequence[Value]
               ) -> Sequence[Value]:
     # Collect the branch functions
+    if not isinstance(true_args, (list, tuple)) or not isinstance(false_args, (
+        list, tuple)):
+      raise TypeError("true_args and false_args must be tuples for cond_ge")
+
     true_func_f, true_func_env = Function.trace_user_function(true_func,
-                                                              true_args)
+                                                              true_args,
+                                                              abstract=False)
     false_func_f, false_func_env = Function.trace_user_function(false_func,
-                                                                false_args)
+                                                                false_args,
+                                                                abstract=False)
     assert str(true_func_f.result_type()) == str(false_func_f.result_type()), (
       "{} != {}".format(true_func_f.result_type(), false_func_f.result_type()))
     return Expr.eval_std_operator(
@@ -649,16 +729,18 @@ class Ops(object):
 
 
 ############ TRACE ##############
-def trace(func: Callable) -> Callable[..., Function]:
+def trace(func: Callable, abstract: bool = True) -> Callable[..., Function]:
   """
   Returns: a function that when applied to `func` arguments traces the function
-    and returns the `Function`.
+    and returns the `Function`. If 'abstract' then force arguments to be
+    abstract during tracing.
   """
 
   def wrapped_trace(*args: Sequence[Value]):
     assert Globals.scope_nesting_depth == 0, "Outside any other tracers"
     Globals.reset()  # Produces more deterministic results
-    func_f, func_f_env = Function.trace_user_function(func, args)
+    func_f, func_f_env = Function.trace_user_function(func, args,
+                                                      abstract=abstract)
     assert not func_f_env  # We usually trace only outside other transformations
     return func_f
 

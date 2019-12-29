@@ -161,7 +161,8 @@ def jit(func: Callable):
   """
 
   def wrapped_jit(*args: Sequence[Value]):
-    func_f, func_f_env = Function.trace_user_function(func, args)
+    func_f, func_f_env = Function.trace_user_function(func, args,
+                                                      abstract=True)
     # Turn it into an Expr, or evaluate if none of the arguments are Tracer
     return Expr.eval_std_operator(Operator.JIT_CALL,
                                   dict(func=func_f),

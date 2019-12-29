@@ -295,3 +295,15 @@ class FlopsTest(jtu.JaxTestCase):
                        check_dtypes=True)
     self.assertAllClose(12., mj.count_flops(func)(-3.),
                         check_dtypes=True)
+
+  def test_flops_if(self):
+    """Test flops through "if" """
+    def func(x):
+      z = x * 2.
+      if z >= 0.:  # Conditional is on the abstract parameter
+        return z + 3.
+      else:
+        return z * 3. + 4. + 5.
+
+    self.assertEqual(2., mj.count_flops(func, abstract=False)(3.))
+    self.assertEqual(4., mj.count_flops(func, abstract=False)(-3.))

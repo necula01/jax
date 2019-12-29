@@ -367,3 +367,15 @@ class GradTest(jtu.JaxTestCase):
   # v0: float
   in 1.0}
       """, str(mj.trace(mj.grad(f0))(0.).pp()))
+
+  def test_grad_if(self):
+    """Test grad through "if" """
+    def func(x):
+      z = x * 2.
+      if z >= 0.:
+        return z + 3.
+      else:
+        return z * 3.
+
+    self.assertEqual(2., mj.grad(func, abstract=False)(3.))
+    self.assertEqual(2. * 3., mj.grad(func, abstract=False)(-3.))

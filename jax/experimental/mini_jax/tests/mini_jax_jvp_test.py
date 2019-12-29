@@ -424,3 +424,45 @@ class JvpTest(jtu.JaxTestCase):
                          2. + 14. + 13., 14.),
                         mj.jvp(func)(-5., 1.),
                         check_dtypes=True)
+
+  def test_jvp_if(self):
+    """Test jvp through "if" """
+    def func(x):
+      z = x * 2.
+      if z >= 0.:
+        return z + 3.
+      else:
+        return z * 3.
+
+    self.assertEqual((9., 5. * 2.), mj.jvp(func, abstract=False)(3., 5.))
+    self.assertEqual((-18., 5. * 2. * 3.), mj.jvp(func, abstract=False)(-3., 5.))
+
+  def test_jvp_nested_if(self):
+    """Test jvp nested through "if" """
+    def func(x):
+      z = x * 2.
+      def inner(y):
+        if y >= 0.:
+          return y + 3.
+        else:
+          return y * 3.
+      r, r_t = mj.jvp(inner, abstract=False)(z, 2.)
+      return r + r_t
+
+    self.assertEqual((11., 5. * 2.), mj.jvp(func, abstract=False)(3., 5.))
+    self.assertEqual((-12., 5. * 2. * 3.), mj.jvp(func, abstract=False)(-3., 5.))
+
+  def test_jvp_nested_if_freevar(self):
+    """Test jvp nested through "if" """
+    def func(x):
+      z = x * 2.
+      def inner(y):
+        if z >= 0.:  # Conditional on a freevar
+          return y + 3.
+        else:
+          return y * 3.
+      r, r_t = mj.jvp(inner, abstract=False)(x, 2.)
+      return r + r_t
+
+    self.assertEqual((8., 5.), mj.jvp(func, abstract=False)(3., 5.))
+    self.assertEqual((-3., 5. * 3.), mj.jvp(func, abstract=False)(-3., 5.))

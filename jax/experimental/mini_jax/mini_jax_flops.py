@@ -131,20 +131,22 @@ class Flops(object):
         return accum(1. + res_cond)
 
 
-def count_flops(func: Callable) -> Callable:
+def count_flops(func: Callable, abstract: bool = True) -> Callable:
   """Wrap a function into a flops counter.
 
   The counting of flops is done as much as possible statically.
 
   Params:
     func: a traceable function
+    abstract: whether to force arguments to be abstract
   Returns:
     a function that when applied to arguments will return a counter of the
     flops performed.
   """
 
   def wrapped_flops(*args: Sequence[Value]):
-    func_f, func_f_env = Function.trace_user_function(func, args)
+    func_f, func_f_env = Function.trace_user_function(func, args,
+                                                      abstract=abstract)
     res_flops = Flops().eval_function(func_f, *args, *func_f_env)
     return res_flops
 
