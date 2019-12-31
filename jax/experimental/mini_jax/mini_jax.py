@@ -13,7 +13,7 @@
 # limitations under the License.
 """Mini-JAX: a pedagogical model of JAX tracing and transformations.
 
-See README.md
+See README.md for high-level description.
 """
 
 from __future__ import absolute_import
@@ -21,13 +21,10 @@ from __future__ import division
 from __future__ import print_function
 
 import enum
-import functools
 import itertools
-import os
 import typing
 from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
-from jax import pprint_util as ppu
 from jax.pprint_util import PrettyPrint, pp_kv_pairs
 from jax.experimental.mini_jax.mini_jax_util import (
   map_tuple, map_list, unzip,
@@ -37,12 +34,12 @@ from jax.experimental.mini_jax.mini_jax_util import (
 TA = typing.TypeVar('TA')
 TB = typing.TypeVar('TB')
 
-Value = Union[Any, 'Tracer']  # Either a Python value, or a Tracer
+Value = Union[Any, 'Tracer']  # Either a Python concrete value, or a Tracer
 
 
 class Globals(object):
   variable_id = itertools.count()  # Unique ids for variables
-  function_id = itertools.count()  # Unique ids for functions (for JIT)
+  function_id = itertools.count()  # Unique ids for function names (for JIT)
   scope_nesting_depth = 0
 
   @staticmethod
@@ -54,15 +51,36 @@ class Globals(object):
 
 
 class ExprType(object):
-  """Types for expressions."""
+  """Types for symbolic expressions and tracers."""
 
   def __init__(self, dtype: type):
     self.dtype = dtype
+
+  @staticmethod
+  def val_to_type(v: Value) -> 'ExprType':
+    """Given a Value, get its type."""
+    if isinstance(v, Tracer):
+      return v.expr.etype
+    # Must be a constant
+    assert isinstance(v, (int, float)), "{}".format(v)
+    if isinstance(v, int):
+      raise NotImplementedError("integer constants not yet implemented")
+    elif isinstance(v, float):
+      return ExprType(float)
+    else:
+      assert False, "{}".format(v)
 
   def __repr__(self):
     return self.dtype.__name__
 
   __str__ = __repr__
+
+  # we will use ExprType as hash keys for caching tracing results.
+  def __hash__(self):
+    return hash(self.dtype.__name__)
+
+  def __eq__(self, other):
+    return self.dtype.__name__ == other.dtype.__name__
 
 
 class Operator(enum.Enum):
@@ -85,7 +103,7 @@ class Operator(enum.Enum):
   GT = "gt"
 
   JIT_CALL = "jit_call"
-  """A jit-wrapped Function. One params {func: Function}. Has as many arguments
+  """A jit-wrapped Function. One parameter {func: Function}. Has as many arguments
   as there are func.invars. If the result is a tuple, it must be a tuple with 
   at least 2 elements. In that case, `e.etype` is a tuple, and 
   `len(e.etype) = len(func.results)`.
@@ -97,9 +115,9 @@ class Operator(enum.Enum):
     func_false: a Function, for the false branch
     
   The arguments are in order:
-    1 argument representing the value to be compared
+    1 argument representing the value to be compared >= 0
     `len(func_true.invars)` arguments to be passed to the `true_func`
-    `len(fund_false.invars)` arguments to be passed to the `false_func`.
+    `len(func_false.invars)` arguments to be passed to the `false_func`.
     
   When pretty-printing, the arguments are actually shown as part of 
   parameters:
@@ -131,7 +149,7 @@ class Expr(object):
     self.operator = operator
     self.params = params
     self.args = args
-    if etype is not None:
+    if etype is not None:  # Type check on construction
       self.etype = etype
     else:
       self.etype = Expr.type_check(self.operator, params,
@@ -157,24 +175,26 @@ class Expr(object):
       arg1_et, arg2_et = args_et
       if arg1_et.dtype is float and arg2_et.dtype is float:
         return arg1_et
-      assert False, "{} {} {}".format(op, arg1_et, arg2_et)
+      raise TypeError("{} {} {}".format(op, arg1_et, arg2_et))
     if op == Operator.POW:
       if args_et[0].dtype is float:
         return args_et[0]
-      assert False
+      raise TypeError("pow {}".format(args_et[0]))
     if op in (Operator.GE, Operator.GT):
       arg1_et, arg2_et = args_et
       if arg1_et.dtype is float and arg2_et.dtype is float:
         return bool
-      assert False, "{} {} {}".format(op, arg1_et, arg2_et)
+      raise TypeError("{} {} {}".format(op, arg1_et, arg2_et))
     raise NotImplementedError
 
   @staticmethod
-  def eval_std_operator(op: Operator, params, args_v: Sequence[Value]) -> Value:
-    """Standard evaluation of an expression, given values or tracers for arguments.
+  def eval_std_operator(op: Operator, params: Dict,
+                        args_v: Sequence[Value]) -> Value:
+    """Standard evaluation of an application of an operator,
+       given values or tracers for arguments.
 
     If any of the arguments is a tracer, the result is a tracer, with the
-    corresponding symbolic expression. If all arguments are Python values,
+    corresponding symbolic expression. If all arguments are Python concrete values,
     then the expression is evaluated and the result is a Python value.
 
     Args:
@@ -203,12 +223,12 @@ class Expr(object):
       func = params["func"]
       assert len(args_v) == len(func.invars)
       all_concrete = all([not isinstance(a, Tracer) for a in args_v])
-      if all_concrete:  # Arguments are all Python values: JIT and execute
+      if all_concrete:  # Arguments are all Python values => JIT and execute
         return Jit.compile_and_execute(func, args_v)
 
-      args_t = map_list(Tracer.val_to_tracer, args_v)
       call_res = Tracer.build(Operator.JIT_CALL, dict(func=func),
-                              args_t, etype=func.result_type())
+                              map_list(Tracer.val_to_tracer, args_v),
+                              etype=func.result_type())
       return Tracer.handle_tuple_result(call_res)
 
     if op == Operator.COND_GE:
@@ -216,7 +236,7 @@ class Expr(object):
       false_func_f = params["false_func"]
       assert len(true_func_f.results) == len(false_func_f.results)
       all_concrete = all([not isinstance(a, Tracer) for a in args_v])
-      if all_concrete:  # Arguments are all Python values: evaluate now
+      if all_concrete:  # Arguments are all Python values => evaluate now
         if args_v[0] >= 0.:
           # We use the jitter to evaluate the branch
           return Jit.compile_and_execute(
@@ -234,20 +254,18 @@ class Expr(object):
 
   def visit_expr(self,
                  visitor: Callable[['Expr', Sequence[TA]], TA],
-                 memo: Dict[int, TA] = None,
-                 **visitor_params) -> TA:
+                 memo: Dict[int, TA]) -> TA:
     """Visit an expression, applying a visitor to all sub-expressions, with memoization.
+
     Args:
       visitor: a function called with the expression being visited, and
         the result of visiting the `args`. The results of visiting expressions
         should not be mutated; they are stored in a memo table.
-      memo: a memo table to use, useful when we want to share memo table across
-        multiple expression visits. Default is to use an internal memo table,
-        whose scope is this call to `visit_expr`.
-      visitor_params: parameters to pass to the visitors.
+      memo: a memo table for storing the results of visiting expressions,
+        indexed by id(e).
+
     Returns: the result of visiting the expression
     """
-    memo = {} if memo is None else memo  # Map id(e) to the result of visiting e
     sentinel = object()
 
     def do_visit(e: 'Expr') -> TA:
@@ -255,7 +273,7 @@ class Expr(object):
       if res is not sentinel:
         return res
       args_v = map_tuple(do_visit, e.args)
-      memo[id(e)] = res = visitor(e, args_v, **visitor_params)
+      memo[id(e)] = res = visitor(e, args_v)
       return res
 
     return do_visit(self)
@@ -273,6 +291,9 @@ class Expr(object):
     or one of the previously defined names. Shared sub-expressions will reuse
     the same name.)
 
+    Args:
+      elst: a list of expressions to convert to 3-address-codes. The sub-expressions
+        can be shared across them.
     Returns:
       a pair with: a list of bound sub-expressions (each with a name), and
       a list of simple expressions corresponding to the input `elst`.
@@ -327,21 +348,21 @@ class Expr(object):
 
 
 class Function(object):
-  """Denotes a closed function."""
+  """Denotes a closed function in the symbolic expression language."""
 
   def __init__(self,
                invars: Sequence[Expr],
                results: Sequence[Expr]):
     """
-    If there are more than 1 bodies, then and only then the function returns
+    If there are more than 1 results, then and only then the function returns
     a tuple.
 
     Args:
       invars: the variables that occur in the results, including free variables.
       results: a list of Expr that depedent only on the Vars in `invars`.
     """
-    self.results = results
     self.invars = invars
+    self.results = results
 
   def __repr__(self):
     return str(self.pp())
@@ -360,22 +381,36 @@ class Function(object):
   @staticmethod
   def trace_user_function(func: Callable,
                           args_v: List[Value],
-                          abstract: bool = True
+                          abstract: bool = True,
+                          cache: bool = True,
                           ) -> Tuple['Function', Sequence['Tracer']]:
-    """Trace a user function given values for the arguments.
+    """Traces a user function given values for the arguments.
+
+    Watches for usage (capture) of tracers from outer tracing, introduces new
+    variables for them, and returns them as extra arguments to be passed to
+    the closed Function.
 
     Args:
       func: a Python user function to trace using Tracer arguments.
       args_v: the values corresponding to the `func` arguments. May be Python
-        values, or Tracer values.
-      abstreact: whether to force arguments to be abstract (no constants carried
-        in the Tracer).
+        concrete values, or Tracer values.
+      abstract: whether to force arguments to be abstract (no constants carried
+        in the Tracer, cheaper, but cannot handle data-dependent control-flow).
+      cache: whether to allow caching of the resulting Function. The result is
+        cached only if `abstract` and if there are no captured tracers.
 
-    Returns: a pair of a closed `Function` along with a list of `Tracer`s
-      corresponding to computations from shallower scopes used in the function
-      body (the environment). The tail of the `invars` of the function correspond
-      to the environment values.
+    Returns: a pair of a closed `Function` along with a list of tracers
+      captured from outer scopes used. The tail of the `invars` of the function
+      correspond to the captured tracers.
     """
+    if cache:
+      cache_key = ("trace", map_tuple(ExprType.val_to_type, args_v))
+      # Do not cache when we do concolic testing, because the path may
+      # depend on actual concrete values.
+      result = Cache.get(func, cache_key) if abstract else None
+      if result is not None:
+        return result
+
     Globals.scope_nesting_depth += 1
     try:
       scope_nesting_depth = Globals.scope_nesting_depth
@@ -392,17 +427,22 @@ class Function(object):
       freevars = []
       freevars_env = []
       for v, env_t in res_env:
-        if v not in freevars:  # We may have a variable twice in an environement
+        if v not in freevars:  # We may have a variable twice in an environment
           freevars.append(v)
           freevars_env.append(env_t)
 
       func_f = Function([v_t.expr for v_t in args_t] + freevars, res_e)
-      return func_f, freevars_env
+      result = func_f, freevars_env
+      # Do not cache if we captured tracers
+      if cache and abstract and not freevars_env:
+        Cache.set(func, cache_key, result)
+      return result
     finally:
       Globals.scope_nesting_depth -= 1
 
   def transform_function(
       self,
+      transform_key: Any,
       evaluator: Callable[['Function', Sequence['Tracer']], Any],
       extra_args_typ: Sequence[ExprType] = None
   ) -> 'Function':
@@ -414,6 +454,8 @@ class Function(object):
     the transformed `Function`.
 
     Args:
+      transform_key: a hashable value to be used for caching the result
+        of the transformation (by `self`).
       evaluator: a Python traceable function, that given a `Function` and
         a set of Tracers evaluates the Function according to the transformed
         semantics.
@@ -423,8 +465,12 @@ class Function(object):
     Returns:
       a transformed Function.
     """
-    args_typ = [iv.etype for iv in
-                self.invars]  # Start with the current arg types
+    result = Cache.get(self, transform_key)
+    if result is not None:
+      return result
+
+    # Start with the current arg types
+    args_typ = [iv.etype for iv in self.invars]
     if extra_args_typ is not None:
       args_typ += extra_args_typ
     args_t = map_tuple(Tracer.new_var_tracer_from_type, args_typ)
@@ -433,22 +479,25 @@ class Function(object):
       res_t = (res_t,)
     # res may contain literals, turn them into Tracer
     res_t = [Tracer.val_to_tracer(r) for r in res_t]
-    return Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
+    result = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
+    Cache.set(self, transform_key, result)
+    return result
 
   def result_type(self):
     """The result type of the function.
-    The result type is a tuple iff there are more than 1 bodies.
+    The result type is a tuple iff there are more than 1 results.
     """
     res = [result.etype for result in self.results]
     return res[0] if len(res) == 1 else res
 
-  def make_evaluator(self,
-                     in_args_v: Sequence[Value],
-                     eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
-                     eval_operator: Callable[
-                       [Operator, Dict, Sequence[Value]], Value] = None,
-                     **eval_params):
+  def make_evaluator(
+      self,
+      in_args_v: Sequence[Value],
+      eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
+      eval_operator: Callable[[Operator, Dict, Sequence[Value]], Value] = None,
+      **eval_params):
     """Make a memoized expression evaluator for this Function.
+
     Args:
       in_args_v: the values for the Function invars.
       eval_expr: an evaluator to be called (once) for each sub-expression,
@@ -498,11 +547,11 @@ class Tracer(object):
       scope_nesting_depth: the scope depth at which it was built. May be `None`
         for literals.
       env: the environment for the expression: additional free variables
-        the appear in `expr` and the tracers they were introduced for.
+        that appear in `expr` and the tracers they were introduced for.
       concrete: an optional Python constant representing the actual concrete
-        Python value
-        for this Tracer. It is used for deciding conditionals. This may be
-        None for values computed from abstract function arguments (e.g., for jit).
+        Python value for this Tracer. It is used for deciding conditionals.
+        This may be None for values computed from abstract function arguments
+        (e.g., for jit, or for other transformations with "abstract=True").
     """
     self.expr = expr
     self.scope_nesting_depth = scope_nesting_depth
@@ -514,12 +563,12 @@ class Tracer(object):
     """Make a Tracer from a Value."""
     if isinstance(v, Tracer):
       return v
-    v_et = Tracer.val_to_type(v)
+    v_et = ExprType.val_to_type(v)
     return Tracer.build(Operator.LITERAL, dict(val=v), (), etype=v_et,
                         concrete=v)
 
   def __repr__(self):
-    op = self.expr.operator  # Special-case some operators, for debugging
+    op = self.expr.operator  # Special-case some operators, simplifies debugging
     if op in (Operator.VAR, Operator.LITERAL):
       fmt = str(self.expr)
     else:
@@ -529,20 +578,6 @@ class Tracer(object):
     return str("Tr[{}/{}]".format(fmt, self.scope_nesting_depth))
 
   __str__ = __repr__
-
-  @staticmethod
-  def val_to_type(v: Value) -> ExprType:
-    """Given a Value, get its type."""
-    if isinstance(v, Tracer):
-      return v.expr.etype
-    # Must be a constant
-    assert isinstance(v, (int, float)), "{}".format(v)
-    if isinstance(v, int):
-      raise NotImplementedError("integer constants not yet implemented")
-    elif isinstance(v, float):
-      return ExprType(float)
-    else:
-      assert False, "{}".format(v)
 
   @staticmethod
   def new_var_tracer_from_type(etype: ExprType) -> 'Tracer':
@@ -557,7 +592,7 @@ class Tracer(object):
       v: either a Python constant, or a Tracer
       abstract: whether to force it to be abstract (drop the concrete value).
     """
-    v_typ = Tracer.val_to_type(v)
+    v_typ = ExprType.val_to_type(v)
     if abstract:
       concrete = None
     elif isinstance(v, Tracer):
@@ -617,7 +652,7 @@ class Tracer(object):
     """
     args_ct = [arg_t.concrete for arg_t in args_t]
     args_e, args_env = Tracer.closure_convert(args_t,
-                                                       Globals.scope_nesting_depth)
+                                              Globals.scope_nesting_depth)
     expr = Expr(op, tuple(args_e), etype=etype, **params)
     if concrete is None and args_t and all([ct is not None for ct in args_ct]):
       concrete = Expr.eval_std_operator(op, params, args_ct)
@@ -707,29 +742,60 @@ class Ops(object):
               false_func: Callable, false_args: Sequence[Value]
               ) -> Sequence[Value]:
     # Collect the branch functions
-    if not isinstance(true_args, (list, tuple)) or not isinstance(false_args, (
-        list, tuple)):
+    if (not isinstance(true_args, (list, tuple)) or
+        not isinstance(false_args, (list, tuple))):
       raise TypeError("true_args and false_args must be tuples for cond_ge")
 
-    true_func_f, true_func_env = Function.trace_user_function(true_func,
-                                                              true_args,
-                                                              abstract=False)
-    false_func_f, false_func_env = Function.trace_user_function(false_func,
-                                                                false_args,
-                                                                abstract=False)
+    true_func_f, true_func_env = (
+      Function.trace_user_function(true_func, true_args, abstract=False))
+    false_func_f, false_func_env = (
+      Function.trace_user_function(false_func, false_args, abstract=False))
     assert str(true_func_f.result_type()) == str(false_func_f.result_type()), (
       "{} != {}".format(true_func_f.result_type(), false_func_f.result_type()))
     return Expr.eval_std_operator(
       Operator.COND_GE,
-      dict(true_func=true_func_f,
-           false_func=false_func_f),
+      dict(true_func=true_func_f, false_func=false_func_f),
       tuple(itertools.chain([to_test],
                             true_args, true_func_env,
                             false_args, false_func_env)))
 
 
+class Cache(object):
+  sentinel = object()
+
+  @staticmethod
+  def get(obj, key):
+    cache = Cache._get_cache(obj)
+    res = cache.get(key, Cache.sentinel)
+    if res is Cache.sentinel:
+      cache["__misses"] += 1
+      return None
+    else:
+      cache["__hits"] += 1
+      return res
+
+  @staticmethod
+  def set(obj, key, val):
+    cache = Cache._get_cache(obj)
+    cache[key] = val
+
+  @staticmethod
+  def get_info(obj):
+    cache = Cache._get_cache(obj)
+    return dict(misses=cache["__misses"], hits=cache["__hits"])
+
+  @staticmethod
+  def _get_cache(obj):
+    cache = getattr(obj, "_cache", None)
+    if cache is None:
+      cache = {"__misses": 0, "__hits": 0}
+      setattr(obj, "_cache", cache)
+    return cache
+
+
 ############ TRACE ##############
-def trace(func: Callable, abstract: bool = True) -> Callable[..., Function]:
+def trace(func: Callable, abstract: bool = True,
+          cache: bool = True) -> Callable[..., Function]:
   """
   Returns: a function that when applied to `func` arguments traces the function
     and returns the `Function`. If 'abstract' then force arguments to be
@@ -740,7 +806,8 @@ def trace(func: Callable, abstract: bool = True) -> Callable[..., Function]:
     assert Globals.scope_nesting_depth == 0, "Outside any other tracers"
     Globals.reset()  # Produces more deterministic results
     func_f, func_f_env = Function.trace_user_function(func, args,
-                                                      abstract=abstract)
+                                                      abstract=abstract,
+                                                      cache=cache)
     assert not func_f_env  # We usually trace only outside other transformations
     return func_f
 

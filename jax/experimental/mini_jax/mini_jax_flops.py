@@ -98,7 +98,7 @@ class Flops(object):
 
     if e.operator == Operator.JIT_CALL:
       func = e.params["func"]
-      flops_func = func.transform_function(self.eval_function)
+      flops_func = func.transform_function("flops", self.eval_function)
       # Perhaps the flops of the function is data-independent
       if flops_func.results[-1].operator == Operator.LITERAL:
         # Add in the cost of the call itself
@@ -113,9 +113,9 @@ class Flops(object):
 
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
-      true_func_flops = true_func_f.transform_function(self.eval_function)
+      true_func_flops = true_func_f.transform_function("flops", self.eval_function)
       false_func_f = e.params["false_func"]
-      false_func_flops = false_func_f.transform_function(self.eval_function)
+      false_func_flops = false_func_f.transform_function("flops", self.eval_function)
       # If both branches have the same flops count, lift it out
       if (true_func_flops.results[-1].operator == Operator.LITERAL and
           false_func_flops.results[-1].operator == Operator.LITERAL and
@@ -131,14 +131,16 @@ class Flops(object):
         return accum(1. + res_cond)
 
 
-def count_flops(func: Callable, abstract: bool = True) -> Callable:
+def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Callable:
   """Wrap a function into a flops counter.
 
   The counting of flops is done as much as possible statically.
 
-  Params:
+  Args:
     func: a traceable function
     abstract: whether to force arguments to be abstract
+    cache: whether to allow the caching of the result of tracing (only meaningful
+      if `abstract`)
   Returns:
     a function that when applied to arguments will return a counter of the
     flops performed.
@@ -146,7 +148,8 @@ def count_flops(func: Callable, abstract: bool = True) -> Callable:
 
   def wrapped_flops(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args,
-                                                      abstract=abstract)
+                                                      abstract=abstract,
+                                                      cache=cache)
     res_flops = Flops().eval_function(func_f, *args, *func_f_env)
     return res_flops
 

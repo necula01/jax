@@ -26,7 +26,7 @@ class GradTest(jtu.JaxTestCase):
   def test_grad_simple(self):
     def func(x, y):
       return 2. * x + x * y
-    grad_func = mj.grad(func)
+    grad_func = mj.grad(func, cache=False)
     self.assertMultiLineStrippedEqual("""
     {lambda v0 v1.
       # v0: float, v1: float
@@ -36,7 +36,7 @@ class GradTest(jtu.JaxTestCase):
 
     self.assertEqual((7., 3.), grad_func(3., 5.))
 
-    jit_grad_func = mj.jit(grad_func)
+    jit_grad_func = mj.jit(grad_func, cache=False)
     self.assertMultiLineStrippedEqual("""
     {lambda v0 v1.
       # v0: float, v1: float
@@ -47,7 +47,7 @@ class GradTest(jtu.JaxTestCase):
       n1 = proj[ idx=0 ] n0
       n2 = proj[ idx=1 ] n0
       in (n1 n2,)}
-        """, str(mj.trace(jit_grad_func)(3., 5.).pp()))
+        """, str(mj.trace(jit_grad_func, cache=False)(3., 5.).pp()))
 
     self.assertEqual((7., 3.), jit_grad_func(3., 5.))
 
@@ -209,7 +209,7 @@ class GradTest(jtu.JaxTestCase):
       def inner(x2):
         return z11 + x1 * 12. + x2 * 22.
       return mj.grad(inner)(x1)
-    func_jit = mj.jit(func)
+    func_jit = mj.jit(func, cache=False)
     def func_equiv(x1):
       return 22.
     self.assertAllClose(func_equiv(5.), func_jit(5.), check_dtypes=True)
@@ -322,7 +322,7 @@ class GradTest(jtu.JaxTestCase):
   n16 = mul n15 14.0
   n17 = add n14 n16
   in n17}
-      """, str(mj.trace(mj.grad(func))(5.).pp()))
+      """, str(mj.trace(mj.grad(func, cache=False))(5.).pp()))
 
   def test_grad_shared_body(self):
     def func(x):
@@ -351,7 +351,8 @@ class GradTest(jtu.JaxTestCase):
                         n1 = mul 3.0 n0
                         in n1} ] v0 1.0 1.0
   in n0}
-      """, str(mj.trace(mj.grad(func))(0.).pp()))
+      """,
+                                      str(mj.trace(mj.grad(func, cache=False))(0.).pp()))
 
   def test_grad_jvp(self):
     def f0(v1):

@@ -210,7 +210,7 @@ class JvpTest(jtu.JaxTestCase):
         return x * z
       return 1. + x + mj.jit(inner)(5.)
 
-    jvp_func = mj.jvp(func)
+    jvp_func = mj.jvp(func, cache=False)
     self.assertEqual((55., 90.), jvp_func(3., 5.))
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
@@ -234,6 +234,20 @@ class JvpTest(jtu.JaxTestCase):
   in (n7 n9,)}
           """, str(mj.trace(jvp_func)(3., 5.).pp()))
 
+  def test_jvp_jit_2(self):
+    """This example throws an error in real-jax"""
+
+    def func(x):
+      def inner(y):
+        return y * x
+
+      # Must have two calls to the inner jit (which is cached)
+      res1 = mj.jit(inner)(4.)
+      res2 = mj.jit(inner)(5.)
+      return res1 + res2
+
+    self.assertAllClose((45., 9.), mj.jvp(func)(5., 1.,), check_dtypes=True)
+
   def test_jvp_jit_multiple_results(self):
     def func(x):
       x += 2. * x
@@ -246,9 +260,7 @@ class JvpTest(jtu.JaxTestCase):
 
     self.assertEqual(func_equiv(3.), func(3.))
 
-    jvp_func = mj.jvp(func)
-    print()
-
+    jvp_func = mj.jvp(func, cache=False)
     self.assertEqual((func_equiv(3.), 5. * (3. + 15.)), jvp_func(3., 5.))
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
@@ -332,7 +344,7 @@ class JvpTest(jtu.JaxTestCase):
   n7 = proj[ idx=0 ] n6
   n8 = proj[ idx=1 ] n6
   in (n7 n8,)}
-      """, str(mj.trace(mj.jvp(func))(5., 1.).pp()))
+      """, str(mj.trace(mj.jvp(func, cache=False))(5., 1.).pp()))
 
   def test_jvp_cond_different_input_arity(self):
     """The conditional branches have different arity."""
@@ -391,7 +403,7 @@ class JvpTest(jtu.JaxTestCase):
   n7 = proj[ idx=0 ] n6
   n8 = proj[ idx=1 ] n6
   in (n7 n8,)}
-      """, str(mj.trace(mj.jvp(func))(5., 1.).pp()))
+      """, str(mj.trace(mj.jvp(func, cache=False))(5., 1.).pp()))
 
 
   def test_jvp_cond_0(self):

@@ -118,9 +118,11 @@ class Grad(object):
 
     # Build a standard evaluator, used to evaluate lazily the values that are
     # needed from the forward pass.
-    eval_std_expr = func.make_evaluator(args, eval_operator=Expr.eval_std_operator)
+    eval_std_expr = func.make_evaluator(args,
+                                        eval_operator=Expr.eval_std_operator)
 
     visited = {}  # By id
+
     def visit_expr_backwards(e: Expr):
       """Visit all expressions, to accumulate adjoints for all expressions."""
       id_e = id(e)
@@ -177,7 +179,8 @@ class Grad(object):
         add_adjoint(e.args[0], out_adj)
       elif pow != 0:
         add_adjoint(e.args[0],
-                    out_adj * float(pow) * eval_std_expr(e.args[0]) ** (pow - 1))
+                    out_adj * float(pow) * eval_std_expr(e.args[0]) ** (
+                          pow - 1))
     elif e.operator == Operator.PROJECTION:
       # We need to reach into the adjoints and increment only one element
       old_adj = adjoints.get(id(e.args[0]))
@@ -217,7 +220,8 @@ class Grad(object):
         results=[zero] * len(true_func_f.invars) + false_func_vjp.results)
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
-      assert len(out_adj) == len(true_func_f.results) == len(false_func_f.results)
+      assert len(out_adj) == len(true_func_f.results) == len(
+        false_func_f.results)
       # We need to evaluate the arguments
       args_v = map_list(eval_std_expr, e.args)
       # Insert the out_adj for both branches
@@ -244,32 +248,38 @@ class Grad(object):
       len(func.invars) outputs, for the input adjoints.
     """
     return func.transform_function(
+      "vjp",
       self.eval_function,
       extra_args_typ=[result.etype for result in func.results])
 
 
-def grad(func: Callable, abstract: bool = True) -> Callable[..., Function]:
+def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
+  ..., Function]:
   """Computes the gradient of a function.
 
   Args:
     func: a function of n-scalar arguments, with a single output.
     abstract: whether to force tracers to be abstract.
+    cache: whether to allow the caching of the result of tracing (only meaningful
+      if `abstract`)
   Returns: a function that when applied to `n` `func` arguments, returns the `n` partial
     derivatives of the function.
   """
 
   def wrapped_grad(*args: Sequence[Value]):
-    func_f, func_f_env = Function.trace_user_function(func, args, abstract=abstract)
+    func_f, func_f_env = Function.trace_user_function(func, args,
+                                                      abstract=abstract,
+                                                      cache=cache)
     assert len(func_f.results) == 1, (
       "grad is only defined for functions that return a single result")
     res_grad = Grad().eval_function(func_f, *args, *func_f_env, 1.)
+
+    if not isinstance(res_grad, tuple):
+      res_grad = (res_grad,)
     # Drop adjoints for the freevars
-    # TODO: this is an ugly result of the convention that the result is either tuple or value
-    if isinstance(res_grad, tuple):
-      if len(args) == 1:
-        return res_grad[0]
-      else:
-        return res_grad[0:len(args)]
+    res_grad = res_grad[0:len(args)]
+    if len(args) == 1:
+      return res_grad[0]
     else:
       return res_grad
 

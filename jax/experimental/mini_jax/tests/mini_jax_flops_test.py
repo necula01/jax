@@ -155,7 +155,7 @@ class FlopsTest(jtu.JaxTestCase):
   n2 = add 1.0 n1
   n3 = add 1.0 n2
   in n3}
-    """, str(mj.trace(mj.count_flops(func))(3.).pp()))
+    """, str(mj.trace(mj.count_flops(func, cache=False))(3.).pp()))
 
     self.assertAllClose(3., mj.count_flops(func)(3.),
                         check_dtypes=True)
@@ -252,7 +252,8 @@ class FlopsTest(jtu.JaxTestCase):
                             in n0} ] 
   n4 = add n1 n3
   in n4}
-    """, str(mj.trace(func)(3.).pp()))
+    """,
+                                      str(mj.trace(func)(3.).pp()))
 
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
@@ -290,7 +291,7 @@ class FlopsTest(jtu.JaxTestCase):
   n8 = add n4 n7
   n9 = add n8 1.0
   in n9}
-    """, str(mj.trace(mj.count_flops(func))(3.).pp()))
+    """, str(mj.trace(mj.count_flops(func, cache=False))(3.).pp()))
     self.assertAllClose(10., mj.count_flops(func)(3.),
                        check_dtypes=True)
     self.assertAllClose(12., mj.count_flops(func)(-3.),

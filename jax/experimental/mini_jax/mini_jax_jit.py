@@ -30,15 +30,18 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
 import os
 from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Globals
+  Value, Globals, Cache
 )
-from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, pp_list, pp_str
+from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, \
+  pp_list, pp_str
 from jax.pprint_util import PrettyPrint
+
 
 class Jit(object):
   """Methods related to compilation."""
@@ -73,14 +76,14 @@ class Jit(object):
         "{} = {}[{}]".format(name, args_s[0], e.params["idx"]))
 
     if e.operator == Operator.JIT_CALL:
-      return Jit.compile_func_call(e.params["func"], args_s, name)
+      return Jit.compile_function_call(e.params["func"], args_s, name)
 
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
-      true_func_compiled = Jit.compile_func_call(
+      true_func_compiled = Jit.compile_function_call(
         true_func_f, args_s[1:1 + len(true_func_f.invars)], name)
       false_func_f = e.params["false_func"]
-      false_func_compiled = Jit.compile_func_call(
+      false_func_compiled = Jit.compile_function_call(
         false_func_f, args_s[1 + len(true_func_f.invars):], name)
       return (pp_str("if {} >= 0.:".format(args_s[0])) +
               true_func_compiled.indent(2) +
@@ -90,9 +93,7 @@ class Jit(object):
     raise NotImplementedError
 
   @staticmethod
-  def compile_func_call(func: Function,
-                        args_s: Sequence[str], res_name: str
-                        ) -> Tuple[PrettyPrint]:
+  def compile_function(func: Function) -> Tuple[str, PrettyPrint]:
     """Compile the function into a PrettyPrinter representing
     an executable Python string.
 
@@ -102,16 +103,17 @@ class Jit(object):
         n0 = v0 op v1             # The body in 3-address-form
         ...
         return [n3, n4]           # The names in 3-address-form
-      res_name = fxxx(a0, a1, ..., an)
 
     Args:
       func: the function to compile
-      args_s: strings representing the arguments
-      res_s: string for where to put the result
 
     Returns: a pair, with the function name, and the PrettyPrinter for
-      printing the function definition and the call.
+      printing the function definition.
     """
+    cache_key = "jit_compile"
+    result = Cache.get(func, cache_key)
+    if result is not None:
+      return result
     bindings, names = Expr.three_address_code(func.results)
     func_name = "f{}".format(next(Globals.function_id))
     header = (pp_str("def {}(".format(func_name)) >>
@@ -131,9 +133,27 @@ class Jit(object):
     else:
       result = pp_str("return {}".format(names[0]))
 
+    result = (func_name, header + header_types + (body + result).indent(2))
+    Cache.set(func, cache_key, result)
+    return result
+
+  @staticmethod
+  def compile_function_call(func: Function,
+                            args_s: Sequence[str], res_name: str
+                            ) -> Tuple[PrettyPrint]:
+    """Compile the function and a call to it.
+    Args:
+      func: the function to compile
+      args_s: strings representing the arguments
+      res_s: string for where to put the result
+
+    Returns: the PrettyPrinter for
+      printing the function definition and the call.
+    """
+    func_name, func_body = Jit.compile_function(func)
     func_call = (pp_str("{} = {}(".format(res_name, func_name)) >>
                  pp_list(args_s, hsep=", ") >> pp_str(")"))
-    return header + header_types + (body + result).indent(2) + func_call
+    return func_body + func_call
 
   @staticmethod
   def compile_and_execute(func: Function, args: Sequence[Value]) -> Value:
@@ -143,8 +163,8 @@ class Jit(object):
       args: actual Python values (no TracingVals)
     """
     assert len(args) == len(func.invars)
-    compiled = Jit.compile_func_call(func, map_tuple(str, func.invars),
-                                     "_result")
+    compiled = Jit.compile_function_call(func, map_tuple(str, func.invars),
+                                         "_result")
     locals = {str(iv): arg for iv, arg in zip(func.invars, args)}
     compiled_str = str(compiled)
     if os.getenv("MINI_JAX_LOG_COMPILES", 0):
@@ -153,8 +173,12 @@ class Jit(object):
     return locals['_result']
 
 
-def jit(func: Callable):
+def jit(func: Callable, cache: bool = True):
   """
+  Args:
+    func: the user function to be traced and jitted
+    cache: whether to allow the caching of the result of tracing
+
   Returns: a function that when applied to `func` arguments traces the function
     and builds an `Expr` that when executed, will JIT-compile the function
     and then execute it.
@@ -162,7 +186,8 @@ def jit(func: Callable):
 
   def wrapped_jit(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args,
-                                                      abstract=True)
+                                                      abstract=True,
+                                                      cache=cache)
     # Turn it into an Expr, or evaluate if none of the arguments are Tracer
     return Expr.eval_std_operator(Operator.JIT_CALL,
                                   dict(func=func_f),

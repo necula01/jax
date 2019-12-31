@@ -16,20 +16,23 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-
 from jax import api
 from jax import lax
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
+from jax.experimental.mini_jax.mini_jax import Cache
 
 from jax.config import config
+
 config.parse_flags_with_absl()
 FLAGS = config.FLAGS
+
 
 class MiniJaxTest(jtu.JaxTestCase):
 
   def test_trace_const_eval(self):
     """Constants are evaluated by Python."""
+
     def func(x):
       return 1. + 2.
 
@@ -43,6 +46,7 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_trace_sharing(self):
     """Ensure that we maintain sharing of Expr (no exp blowout)."""
+
     def func(x):
       y = x + x
       z = y * y
@@ -64,6 +68,7 @@ class MiniJaxTest(jtu.JaxTestCase):
   def test_trace_captured_const(self):
     """Capture a constant from outside the scope."""
     outside = 1.
+
     def func(x, y):
       return x + y + outside
 
@@ -80,10 +85,13 @@ class MiniJaxTest(jtu.JaxTestCase):
   def test_jit_const(self):
     """JIT a function returning a constant"""
     outside = 10.
+
     def func(x):
       x += 1.
+
       def inner(z):
         return outside
+
       return mj.jit(inner)(x)
 
     func_tr = mj.trace(func)(5.)
@@ -101,10 +109,13 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_captured_const(self):
     outside = 10.
+
     def func(x, y):
       x += 1.
+
       def inner(z):
         return x + z + outside
+
       return mj.jit(inner)(x)
 
     func_tr = mj.trace(func)(5., 6.)
@@ -124,11 +135,13 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_captured_computation(self):
     """Should not capture computations from shallower scope depths"""
+
     def fun1(x1):
       z11 = x1 * 11.  # We multiply with 11. to mean using x1 in fun1
 
       def fun2(x2):
         return z11 + x1 * 12. + x2 * 22.
+
       return mj.jit(fun2)(x1)
 
     fun1_jit = mj.jit(fun1)
@@ -151,16 +164,20 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_captured_computation_2(self):
     """Should not capture computations from shallower scope depths"""
+
     def fun1(x1):
       z11 = x1 * 11.  # We multiply with 11. to mean using x1 in fun1
 
       def fun2(x2):
         z22 = z11 + x1 * 12. + x2 * 22.
+
         def fun3(x3):
           # Capture twice x2, ensure that we only close over it once
           z33 = z11 * 13. + z22 * 23. + x2 * 23. + x2 * 23. + x1 * x1
           return z33
+
         return mj.jit(fun3)(x2)
+
       return mj.jit(fun2)(x1)
 
     fun1_jit = mj.jit(fun1)
@@ -195,8 +212,10 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_return_tuple(self):
     """JIT function returning a tuple."""
+
     def func(x):
       return (x + 1., x * 2., 5.)
+
     func_jit = mj.jit(func)
     func_tr = mj.trace(func_jit)(5.)
     self.assertMultiLineStrippedEqual("""
@@ -218,10 +237,13 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_nested(self):
     outside = 1.
+
     def func(x, y):
       x += 10.
+
       def inner(z):
         return z + x + outside
+
       return mj.jit(inner)(x)
 
     self.assertEqual(31., func(5., 6.))
@@ -247,10 +269,13 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_jit_two_calls(self):
     enable_jit = False
+
     def func(x):
       x += 1.
+
       def inner(z):
         return z + x
+
       inner_jitted = mj.jit(inner) if enable_jit else inner
       return inner_jitted(x) + inner_jitted(3.)
 
@@ -270,7 +295,7 @@ class MiniJaxTest(jtu.JaxTestCase):
 
     # With jit
     enable_jit = True
-    func_tr = mj.trace(func)(5.)
+    func_tr = mj.trace(func, cache=False)(5.)
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
   # v0: float
@@ -291,13 +316,15 @@ class MiniJaxTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                 lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                 lambda fv: z + x1 * 13., (x1 * 14.,))
+                            lambda tv: z + tv + x1 * 3., (x1 * 4.,),
+                            lambda fv: z + x1 * 13., (x1 * 14.,))
+
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
         return x1 * 2. + x1 * 14. + x1 * 13.
+
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
   # v0: float
@@ -327,8 +354,9 @@ class MiniJaxTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                 lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                 lambda fv: z + x1 * 13., (x1 * 14.,))
+                            lambda tv: z + tv + x1 * 3., (x1 * 4.,),
+                            lambda fv: z + x1 * 13., (x1 * 14.,))
+
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
@@ -339,12 +367,14 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_trace_if_ge(self):
     """Test tracing through "if" """
+
     def func(x):
       z = x * 2.
       if z >= 4.:
         return z + 3.
       else:
         return z - 3.
+
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
   # v0: float
@@ -389,13 +419,16 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_trace_cond_if(self):
     """Test tracing through "if" under "cond" """
+
     def func(x):
       z = x * 2.
+
       def true_f(xt):
         if xt >= 0.:
           return xt + 3.
         else:
           return xt - 3.
+
       return mj.Ops.cond_ge(z, true_f, (z,), lambda _: 0., (0.,))
 
     self.assertMultiLineStrippedEqual("""
@@ -414,7 +447,8 @@ class MiniJaxTest(jtu.JaxTestCase):
                             in n0} ] 
   in n1}
     """,
-                                      str(mj.trace(func, abstract=False)(3.).pp()))
+                                      str(mj.trace(func, abstract=False)(
+                                        3.).pp()))
 
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
@@ -432,17 +466,21 @@ class MiniJaxTest(jtu.JaxTestCase):
                             in n0} ] 
   in n1}
     """,
-                                      str(mj.trace(func, abstract=False)(-3.).pp()))
+                                      str(mj.trace(func, abstract=False)(
+                                        -3.).pp()))
 
   def test_trace_jit_if_static(self):
     """Test tracing through "if" on static args under "jit" """
+
     def func(x):
       z = x * 2.
+
       def inner(y):
         if z >= 0.:  # Conditional is on the concrete parameter
           return y + 3.
         else:
           return y - 3.
+
       return mj.jit(inner)(z)
 
     self.assertMultiLineStrippedEqual("""
@@ -469,18 +507,47 @@ class MiniJaxTest(jtu.JaxTestCase):
 
   def test_trace_jit_if_dynamic(self):
     """Test tracing through "if" on dynamic args under "jit" """
+
     def func(x):
       z = x * 2.
+
       def inner(y):
         if y >= 0.:  # Conditional is on the abstract parameter
           return y + 3.
         else:
           return y - 3.
+
       return mj.jit(inner)(z)
 
-    with self.assertRaisesRegexp(TypeError,
-                            "Boolean test not supported on abstract values"):
+    with self.assertRaisesRegex(TypeError,
+                                "Boolean test not supported on abstract values"):
       mj.trace(func)(3.).pp()
+
+  def test_jit_cache(self):
+    def func(x):
+      return x * 2.
+
+    jvp_func = mj.jvp(func)  # Save it, to attach the cache to it
+    self.assertAllClose((2., 2.), mj.jit(jvp_func)(1., 1.), check_dtypes=True)
+    self.assertAllClose((2., 2.), mj.jit(jvp_func)(1., 1.), check_dtypes=True)
+    self.assertEqual(dict(hits=1, misses=1), Cache.get_info(jvp_func))
+    # The func trace cache is never hit, because the jvp_fund cache is hit
+    self.assertEqual(dict(hits=0, misses=1), Cache.get_info(func))
+
+    self.assertAllClose((2., 2.), jvp_func(1., 1.), check_dtypes=True)
+    self.assertEqual(dict(hits=1, misses=1), Cache.get_info(func))
+
+  def test_jit_cache_2(self):
+    def func(x):
+      return x * 2.
+
+    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.), check_dtypes=True)
+    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.), check_dtypes=True)
+    # We still hit the `func` cache for mj.jit
+    self.assertEqual(dict(hits=1, misses=1), Cache.get_info(func))
+
+    self.assertAllClose(2., mj.jit(func)(1.), check_dtypes=True)
+    self.assertEqual(dict(hits=2, misses=1), Cache.get_info(func))
 
 
 class ComparativeJaxTest(jtu.JaxTestCase):
@@ -489,9 +556,12 @@ class ComparativeJaxTest(jtu.JaxTestCase):
   def test_captured_computation(self):
     def func1(x):
       z = x * 2.
+
       def inner(y):
         return y + x * 4. + z
+
       return api.jit(inner)(x * 3.)
+
     print(api.make_jaxpr(func1)(5.))
 
   def test_grad_sharing(self):
@@ -518,14 +588,29 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     print(api.make_jaxpr(api.grad(func, argnums=(0, 1)))(3., 4.))
 
   def test_grad_jit_swap(self):
+    """Compare the result if we swap grad and jit."""
     def func(x1, y1):
       return x1 * y1
 
     print(api.make_jaxpr(api.jit(api.grad(func, argnums=(0, 1))))(3., 4.))
     print(api.make_jaxpr(api.grad(api.jit(func), argnums=(0, 1)))(3., 4.))
 
+  def test_grad_undefined_under_jit(self):
+    """JAX manages to have the while_loop on the stack trace when grad fails"""
+    def func(x):
+      def inner(y):
+        return lax.while_loop(lambda acc: acc < y,
+                              lambda acc: acc + 1.,
+                              0.)
+      return api.jit(inner)(x)
+
+    with self.assertRaisesRegex(NotImplementedError,
+                                "Forward-mode differentiation rule for 'while' not implemented"):
+      print(api.make_jaxpr(api.grad(func))(3.))
+
   def test_grad_cond(self):
     """Gradient with conditional control-flow"""
+
     def func(x1):
       z = x1 * 2.
       return lax.cond(x1 >= 0.,
@@ -537,6 +622,7 @@ class ComparativeJaxTest(jtu.JaxTestCase):
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
         return x1 * 2. + x1 * 14. + x1 * 13.
+
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
     self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
     with self.assertRaisesRegex(NotImplementedError,
@@ -545,9 +631,9 @@ class ComparativeJaxTest(jtu.JaxTestCase):
                           api.grad(func)(5.),
                           check_dtypes=True)
 
-
   def test_grad_concrete(self):
     """Gradient with concrete control-flow", and jit"""
+
     def func(x1, y1):
       if x1 >= 0:
         return x1 * y1
@@ -572,6 +658,7 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
   def test_grad_concrete_cond(self):
     """Gradient with concrete control-flow and cond"""
+
     def func(x1, y1):
       return lax.cond(x1 >= 0, y1, lambda tv: tv * 2., y1, lambda fv: fv * 3.)
 
@@ -580,3 +667,15 @@ class ComparativeJaxTest(jtu.JaxTestCase):
         "Forward-mode differentiation rule for 'cond' not implemented"):
       api.grad(func, argnums=(0, 1))(3., 4.)
 
+  def test_jit_cache(self):
+    def func(x):
+      def inner(y):
+        return y * x
+
+      res1 = api.jit(inner)(4.)
+      x = -2.
+      res2 = api.jit(inner)(4.)
+      return res1 + res2
+
+    self.assertAllClose(40., func(5.), check_dtypes=True)
+    self.assertAllClose(-40., func(-5.), check_dtypes=True)
