@@ -274,20 +274,20 @@ class GradTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                 lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                 lambda fv: z + fv + x1 * 13., (x1 * 14.,))
+                 lambda tv: z + tv + x1 * 3.,
+                 lambda fv: z + fv + x1 * 13., (x1 * 4.,))
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
+        return x1 * 2. + x1 * 4. + x1 * 13.
 
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
     self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
     self.assertAllClose(2. + 4. + 3.,
                         mj.grad(func)(5.),
                         check_dtypes=True)
-    self.assertAllClose(2. + 14. + 13.,
+    self.assertAllClose(2. + 4. + 13.,
                         mj.grad(func)(-5.),
                         check_dtypes=True)
     self.assertMultiLineStrippedEqual("""
@@ -295,33 +295,28 @@ class GradTest(jtu.JaxTestCase):
   # v0: float
   n0 = mul v0 4.0
   n1 = mul v0 2.0
-  n2 = mul v0 14.0
-  n3 = cond_ge[ false_args=('n2', 'n1', v0, 1.0)
-                false_func={lambda v10 v11 v12 v13.
-                             # v10: float, v11: float, v12: float, v13: float
-                             n0 = mul v13 13.0
-                             in (0.0 0.0 0.0 v13 v13 n0,)}
+  n2 = cond_ge[ args=('n0', v0, 'n1', v0, 'n1', 1.0)
+                false_func={lambda v16 v17 v18 v19 v20 v21.
+                             # v16: float, v17: float, v18: float, v19: float, v20: float, v21: float
+                             n0 = mul v21 13.0
+                             in (v21 0.0 0.0 n0 v21,)}
                 pred_arg=v0
-                true_args=('n0', 'n1', v0, 1.0)
-                true_func={lambda v6 v7 v8 v9.
-                            # v6: float, v7: float, v8: float, v9: float
-                            n0 = mul v9 3.0
-                            in (v9 v9 n0 0.0 0.0 0.0,)} ] 
-  n4 = proj[ idx=2 ] n3
-  n5 = proj[ idx=5 ] n3
-  n6 = add n4 n5
-  n7 = proj[ idx=0 ] n3
-  n8 = mul n7 4.0
-  n9 = add n6 n8
-  n10 = proj[ idx=1 ] n3
-  n11 = proj[ idx=4 ] n3
-  n12 = add n10 n11
-  n13 = mul n12 2.0
-  n14 = add n9 n13
-  n15 = proj[ idx=3 ] n3
-  n16 = mul n15 14.0
-  n17 = add n14 n16
-  in n17}
+                true_func={lambda v10 v11 v12 v13 v14 v15.
+                            # v10: float, v11: float, v12: float, v13: float, v14: float, v15: float
+                            n0 = mul v15 3.0
+                            in (v15 n0 v15 0.0 0.0,)} ] 
+  n3 = proj[ idx=1 ] n2
+  n4 = proj[ idx=3 ] n2
+  n5 = add n3 n4
+  n6 = proj[ idx=0 ] n2
+  n7 = mul n6 4.0
+  n8 = add n5 n7
+  n9 = proj[ idx=2 ] n2
+  n10 = proj[ idx=4 ] n2
+  n11 = add n9 n10
+  n12 = mul n11 2.0
+  n13 = add n8 n12
+  in n13}
       """, str(mj.trace(mj.grad(func, cache=False))(5.).pp()))
 
   def test_grad_shared_body(self):

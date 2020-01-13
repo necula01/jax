@@ -152,11 +152,11 @@ class FakeMiniJax(MiniJaxWrapper):
                                       variant="fake")
     self.differentiation_level = 0  # How many levels of numerical differentiation we are under
 
-  def cond_ge(self, pred, true_func, true_ops, false_func, false_ops):
+  def cond_ge(self, pred, true_func, false_func, args):
     if pred >= 0.:
-      return true_func(*true_ops)
+      return true_func(*args)
     else:
-      return false_func(*false_ops)
+      return false_func(*args)
 
   def jit(self, func):
     return func
@@ -391,10 +391,10 @@ class FakeMiniJaxTest(jtu.JaxTestCase):
     fake_mj = FakeMiniJax().make_global_dict()
 
     def f0(v2):
-      return fake_mj["cond_ge"](v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+      return fake_mj["cond_ge"](v2, lambda tv: 1., lambda fv: 0., (0.,))
 
     def f1(v2):
-      return fake_mj["cond_ge"](0. - v2, lambda tv: 1., (0.,), lambda fv: 0.,
+      return fake_mj["cond_ge"](0. - v2, lambda tv: 1., lambda fv: 0.,
                                 (0.,))
 
     with self.assertRaisesRegex(NumericalDifferentiationError, ""):
@@ -406,11 +406,11 @@ class FakeMiniJaxTest(jtu.JaxTestCase):
     """Test the fake JVP, at discontinuity"""
     code = """
 def f0(v2):
-  return cond_ge(v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+  return cond_ge(v2, lambda tv: 1., lambda fv: 0., (0.,))
 v17, v18 = jvp(f0)(0.0, 3.0)
 
 def f1(v2):
-  return cond_ge(0. - v2, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+  return cond_ge(0. - v2, lambda tv: 1., lambda fv: 0., (0.,))
 v19, v20 = jvp(f1)(0.0, 3.0)
   
 _result = (v17, v18, v19, v20)
@@ -434,7 +434,7 @@ def f1(x):
   return 2. * x
 y, y_tan = jvp(f1)(1., 2.)
 # y_tan should be 4, but may be a bit below or above
-_result = cond_ge(y_tan - 4., lambda tv: 1., (0.,), lambda fv: 0., (0.,)) 
+_result = cond_ge(y_tan - 4., lambda tv: 1., lambda fv: 0., (0.,)) 
 print("{} result = {} y_tan={}".format(variant, _result, y_tan))
 """
     check_code_example(code, verbose_trace=True)
@@ -576,10 +576,8 @@ class JaxExampleStrategy(st.SearchStrategy):
         # One or more vars initialized from cond_ge
         st.fixed_dictionaries(dict(kind=st.just("var_decl_cond"),
                                    nr_res=st.integers(min_value=1, max_value=2),
-                                   nr_true_ops=st.integers(min_value=1,
-                                                           max_value=2),
-                                   nr_false_ops=st.integers(min_value=1,
-                                                            max_value=2)))
+                                   nr_ops=st.integers(min_value=1,
+                                                      max_value=2)))
       ]
     # Pick the body structure
     body_structure = st.lists(
@@ -636,38 +634,34 @@ class JaxExampleStrategy(st.SearchStrategy):
         env = env.add_func(func_name, nr_args, nr_res)
 
       elif elem["kind"] == "var_decl_cond":
-        nr_res, nr_true_ops, nr_false_ops = [
-          elem[f] for f in ["nr_res", "nr_true_ops", "nr_false_ops"]]
+        nr_res, nr_ops = [
+          elem[f] for f in ["nr_res", "nr_ops"]]
 
         var_names = [self.new_jax_name("v") for _ in range(elem["nr_res"])]
         true_func_name, true_arg_names, true_func_body = (
-          self.draw_func_decl(data, nr_true_ops, nr_res, env))
+          self.draw_func_decl(data, nr_ops, nr_res, env))
         false_func_name, false_arg_names, false_func_body = (
-          self.draw_func_decl(data, nr_false_ops, nr_res, env))
+          self.draw_func_decl(data, nr_ops, nr_res, env))
         true_func_pp = self.pp_func_decl(true_func_name, true_arg_names,
                                          true_func_body)
         false_func_pp = self.pp_func_decl(false_func_name, false_arg_names,
                                           false_func_body)
 
         pred = self.draw_expr_atom(data, env)
-        true_args = [self.draw_expr_atom(data, env) for _ in range(nr_true_ops)]
-        false_args = [self.draw_expr_atom(data, env) for _ in
-                      range(nr_false_ops)]
+        args = [self.draw_expr_atom(data, env) for _ in range(nr_ops)]
 
-        true_ops_pp = (
-            pp_str("(") >> pp_list(true_args, hsep=", ") >> pp_str(",)"))
-        false_ops_pp = (
-            pp_str("(") >> pp_list(false_args, hsep=", ") >> pp_str(",)"))
-        cond_args = pp_list([pred, true_func_name, true_ops_pp,
-                             false_func_name, false_ops_pp],
+        ops_pp = (
+            pp_str("(") >> pp_list(args, hsep=", ") >> pp_str(",)"))
+        cond_args = pp_list([pred, true_func_name,
+                             false_func_name, ops_pp],
                             hsep=", ")
         cond_pp = (true_func_pp + false_func_pp +
                    (self.pp_vars_decl(var_names, pp_str(
                      "cond_ge(") >> cond_args >> pp_str(")"))))
         body.append(cond_pp)
         env = env.add_vars(var_names)
-        env = env.add_func(true_func_name, nr_true_ops, nr_res)
-        env = env.add_func(false_func_name, nr_false_ops, nr_res)
+        env = env.add_func(true_func_name, nr_ops, nr_res)
+        env = env.add_func(false_func_name, nr_ops, nr_res)
       else:
         assert False
 
@@ -783,7 +777,6 @@ class JaxGenTest(jtu.JaxTestCase):
     """Bug found with hypothesis."""
     raise self.skipTest("Reserve test for Hypothesis repro")
     code = """
-
 """
     check_code_example(code, verbose_trace=True)
 

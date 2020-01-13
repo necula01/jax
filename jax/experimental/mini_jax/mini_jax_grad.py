@@ -38,21 +38,29 @@ For a `COND_GE` we evaluate the VJP of the branches. Given the a conditional:
 
 ```
     if pred:
-      out = true_func(true_arg)
+      out = true_func(arg)
     else:
-      out = false_func(false_arg)
+      out = false_func(arg)
 ```
-where `true_func`, `false_func` are parameters, and `[pred, true_arg, false_arg]`
+where `true_func`, `false_func` are parameters, and `[pred, arg]`
 are arguments. We compute the input adjoints (for the 3 arguments in order)
 as follows:
 ```
     if pred:
-      input_adj = 0, true_func_vjp(true_arg, out_adj), 0
+      input_adj = 0, true_func_vjp(true_arg, out_adj)
     else:
-      input_adj = 0, 0, false_func_vjp(false_arg, out_adj)
+      input_adj = 0, false_func_vjp(false_arg, out_adj)
 ```
-Note that we pad the values returned by the branch `vjp` functions with
-zeros for the inputs not used by a particular branch.
+
+Note that in XLA and real JAX the `cond` primitive has separate sets of
+arguments for the `true_func` and `false_func`, e.g.,
+`cond_ge(pred, true_func, true_args, false_func, false_args)`. This choice
+requires the `true_func_vjp` and `false_func_vjp` to return adjoints
+for *both* `true_args` and `false_args` (filled with 0 for the arguments
+for the opposite branch). This requires memory usage proportional to the
+union of the adjoints. For the common case when we want to pass the same
+inputs `x` to both branches, we'll need double the space to return its
+adjoint from the two branches.
 
 Concrete examples are in `tests/mini_jax_grad_test.py`.
 """
@@ -209,27 +217,16 @@ class Grad(object):
       true_func_vjp = self.transform_function(true_func_f)
       false_func_f = e.params["false_func"]
       false_func_vjp = self.transform_function(false_func_f)
-      # Expand the branches to return the adjoints for all the true_args and false_args
-      # We actually do not compute the adjoint for the predicate; it is 0
-      zero = Expr(Operator.LITERAL, (), etype=ExprType(float), val=0.)
-      true_func_vjp_expanded = Function(
-        invars=true_func_vjp.invars,
-        results=true_func_vjp.results + [zero] * len(false_func_f.invars))
-      false_func_vjp_expanded = Function(
-        invars=false_func_vjp.invars,
-        results=[zero] * len(true_func_f.invars) + false_func_vjp.results)
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
       assert len(out_adj) == len(true_func_f.results) == len(
         false_func_f.results)
-      # We need to evaluate the arguments
+      # We need to evaluate the arguments, to reconstruct the cond
       args_v = map_list(eval_std_expr, e.args)
-      # Insert the out_adj for both branches
-      args_vjp_v = (args_v[0:1 + len(true_func_f.invars)] + out_adj +
-                    args_v[1 + len(true_func_f.invars):] + out_adj)
+      args_vjp_v = (args_v + out_adj)
       args_adj = Expr.eval_std_operator(Operator.COND_GE,
-                                        dict(true_func=true_func_vjp_expanded,
-                                             false_func=false_func_vjp_expanded),
+                                        dict(true_func=true_func_vjp,
+                                             false_func=false_func_vjp),
                                         args_vjp_v)
       assert len(args_adj) == len(e.args) - 1
       add_adjoint(e.args[0], 0.)  # The predicate arguments
@@ -266,7 +263,7 @@ def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
     derivatives of the function.
   """
 
-  def wrapped_grad(*args: Sequence[Value]):
+  def do_grad(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=abstract,
                                                       cache=cache)
@@ -283,4 +280,4 @@ def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
     else:
       return res_grad
 
-  return wrapped_grad
+  return do_grad

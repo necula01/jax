@@ -25,7 +25,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import functools
 import itertools
 from typing import Any, Dict, Callable, Tuple, Sequence, List
 
@@ -137,11 +136,8 @@ class Jvp(object):
         Operator.COND_GE,
         dict(true_func=true_func_jvp,
              false_func=false_func_jvp),
-        (args_v[0:1 + len(true_func_f.invars)] +  # pred and true_args
-         args_tan[1:1 + len(true_func_f.invars)] +  # true_args_tan
-         args_v[1 + len(true_func_f.invars):] +  # false_args
-         args_tan[1 + len(true_func_f.invars):]))  # false_args_tan
-      return res_with_tan
+        (args_v +  # pred and args
+         args_tan[1:]))   # args_tan
 
     raise NotImplementedError
 
@@ -159,11 +155,11 @@ def jvp(func: Callable, abstract: bool = True, cache: bool = True
     followed by their tangents.
   """
 
-  def wrapped_jvp(*args_and_tangents: Sequence[Value]):
+  def do_jvp(*args_and_tangents: Sequence[Value]):
     assert len(args_and_tangents) % 2 == 0
     nr_args = len(args_and_tangents) // 2  # Arguments expected
     args = args_and_tangents[0:nr_args]
-    # Trace the function on the arguments only
+    # Trace the function on the primal arguments only
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=abstract,
                                                       cache=cache)
@@ -176,4 +172,4 @@ def jvp(func: Callable, abstract: bool = True, cache: bool = True
     res = Jvp().eval_function(func_f, *args_and_tangents)
     return res
 
-  return wrapped_jvp
+  return do_jvp

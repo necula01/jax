@@ -146,11 +146,11 @@ def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Ca
     flops performed.
   """
 
-  def wrapped_flops(*args: Sequence[Value]):
+  def do_flops(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=abstract,
                                                       cache=cache)
     res_flops = Flops().eval_function(func_f, *args, *func_f_env)
     return res_flops
 
-  return wrapped_flops
+  return do_flops

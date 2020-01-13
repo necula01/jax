@@ -693,26 +693,26 @@ We use "before" and "after" to refer to the function and arguments before and af
 the transformation.
 ```
 def pickle(traceable_user_func):
-  def transformed(args_after: List[Value]):
+  def do_pickle(args_after: List[Value]):
      """The transformed function, taking the arguments after transformation."""
      # Prepare argument types for tracing the traceable_user_func (before transformation)
      # These may be a subset of the args_after (e.g., JVP, where args_after include tangents) 
      args_before : List[Value] = ...  
-     args_before_typ: List[ExprType] = map(Tracer.val_to_type, args_before)
-     # Trace the user function to get the Function, and the extra arguments captured
+
+     # Trace the user function to get the `Function`, and the extra arguments captured
      # from lexical scopes of outer transformations.
      func_before_f: Function, func_env: List[Tracer] = \
          Function.trace_user_function(traceable_user_func, args_before)
-     all_args_after: List[Value] = ...  # Expand args_after with closure arguments (new_args_before)
-     # Now run the pickle evaluator on the closed Function
+
+     # Now run the pickle evaluator on the closed `Function`
      res: Value = pickle_eval_function(func_before_f, args_after + func_env)
      return res
 
-  return transformed
+  return do_pickle
 ```
 
-Also specific to our transformation is the custom evaluator for a 
-already traced and closed `Function`:
+Also specific to our transformation is the custom `pickle` evaluator for a 
+already traced and *closed* `Function`:
 ```
 def pickle_eval_function(func: Function, args_after: List[Value]) : Value:
   """The transformer custom evaluator for a closed Function"""
@@ -733,30 +733,30 @@ def eval_pickle_operator(op: Operator, params, args_v: List[Value]):
   if op == JIT_CALL:
     # Must push the transformation into the body of the function to be jitted
     func_pickled_f = params.func.transform_function(pickle_eval_function)
-    # Construct a JIT_CALL expression, or evaluate the JIT, dependending
-    # on whetehr args_v contains tracers. 
+    # Construct a JIT_CALL expression, or evaluate the JIT, depending
+    # on whether args_v contain tracers. 
     return eval_std_operator(JIT_CALL, {func: func_pickled_f}, args_v)
 ```
 
-Finally, we have the following important code that shared by all 
+Finally, we have the following important core code that shared by all 
 transformations (`mini_jax.py`). 
 First is `Function.trace_user_function` to trace a user function into 
 an internal `Function` (along with the additional arguments captured from 
 outer scopes).
 This function is called before every transformation:
 ```
-def Function.trace_user_function(traceable_user_func, args_v: List[Value]m
+def Function.trace_user_function(traceable_user_func, args_v: List[Value],
                                  abstract = True, cache = True) -> Function:
-    if cache: 
-      if found_in_cache: return cached_function
+    if cache and found_in_cache: return cached_function
 
     scope_depth = push_scope()  # A new global dynamic scope to detect computations from outer scopes
     args_t : List[Tracer] = map(Tracer.new_var_tracer_from_val(scope_depth), args_v)
-    # Trace the user function, before the transformation
+    # Trace the user function
     res_t : Tracer = traceable_user_func(args_t)
     pop_scope()
     # Look for captured expressions from outer scope. Those will be new arguments
     res_f: Function, new_args: List[Tracer] = closure_convert(res_t, scope_depth)
+
     return res_f, new_args  
 ```
 
@@ -773,6 +773,7 @@ def Function.transform_function(func: Function, evaluator,
     args_t : List[Tracer] = map(Tracer.new_var_tracer_from_type, 
                                 func.vars.typ + extra_args_typ)
     res_t : Tracer = evaluator(func, args_t)
+    # No need to closure convert, input `func` is closed.
     return Function(args_t.vars, res_t)
 ```
 

@@ -205,37 +205,39 @@ class JvpTest(jtu.JaxTestCase):
 
   def test_jvp_jit(self):
     def func(x):
-      x += 2. * x
-      def inner(z):
-        return x * z
-      return 1. + x + mj.jit(inner)(5.)
+      y = 2. * x
 
-    jvp_func = mj.jvp(func, cache=False)
-    self.assertEqual((55., 90.), jvp_func(3., 5.))
+      def inner(z):
+        return y * z
+
+      return 1. + y + mj.jit(inner)(5.)
+
+    self.assertEqual((37., 60.), mj.jvp(func)(3., 5.))
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
   # v0: float, v1: float
   n0 = mul 2.0 v0
-  n1 = add v0 n0
-  n2 = add 1.0 n1
-  n3 = mul 2.0 v1
-  n4 = add v1 n3
-  n5 = jit_call[ func={lambda v5 v6 v7 v8.
+  n1 = add 1.0 n0
+  n2 = mul 2.0 v1
+  n3 = jit_call[ func={lambda v5 v6 v7 v8.
                         # v5: float, v6: float, v7: float, v8: float
                         n0 = mul v6 v5
                         n1 = mul v8 v5
                         n2 = mul v6 v7
                         n3 = add n1 n2
-                        in (n0 n3,)} ] 5.0 n1 0.0 n4
-  n6 = proj[ idx=0 ] n5
+                        in (n0 n3,)} ] 5.0 n0 0.0 n2
+  n4 = proj[ idx=0 ] n3
+  n5 = add n1 n4
+  n6 = proj[ idx=1 ] n3
   n7 = add n2 n6
-  n8 = proj[ idx=1 ] n5
-  n9 = add n4 n8
-  in (n7 n9,)}
-          """, str(mj.trace(jvp_func)(3., 5.).pp()))
+  in (n5 n7,)}
+              """,
+                                      str(mj.trace(mj.jvp(func, cache=False))(3., 5.).pp()))
+
+
 
   def test_jvp_jit_2(self):
-    """This example throws an error in real-jax"""
+    """This example used to throw an error in real-Jax"""
 
     def func(x):
       def inner(y):
@@ -295,20 +297,20 @@ class JvpTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                 lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                 lambda fv: z + fv + x1 * 13., (x1 * 14.,))
+                 lambda tv: z + tv + x1 * 3.,
+                 lambda fv: z + fv + x1 * 13., (x1 * 4.,))
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
+        return x1 * 2. + x1 * 4. + x1 * 13.
 
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
     self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
     self.assertAllClose((func_equiv(5.), 2. + 4. + 3.),
                         mj.jvp(func)(5., 1.),
                         check_dtypes=True)
-    self.assertAllClose((func_equiv(-5.), 2. + 14. + 13.),
+    self.assertAllClose((func_equiv(-5.), 2. + 4. + 13.),
                         mj.jvp(func)(-5., 1.),
                         check_dtypes=True)
     self.assertMultiLineStrippedEqual("""
@@ -318,97 +320,35 @@ class JvpTest(jtu.JaxTestCase):
   n1 = mul v0 2.0
   n2 = mul v1 4.0
   n3 = mul v1 2.0
-  n4 = mul v0 14.0
-  n5 = mul v1 14.0
-  n6 = cond_ge[ false_args=('n4', 'n1', v0, 'n5', 'n3', v1)
-                false_func={lambda v13 v14 v15 v16 v17 v18.
-                             # v13: float, v14: float, v15: float, v16: float, v17: float, v18: float
-                             n0 = add v14 v13
-                             n1 = mul v15 13.0
+  n4 = cond_ge[ args=('n0', v0, 'n1', v0, 'n1', 'n2', v1, 'n3', v1, 'n3')
+                false_func={lambda v21 v22 v23 v24 v25 v26 v27 v28 v29 v30.
+                             # v21: float, v22: float, v23: float, v24: float, v25: float, v26: float, v27: float, v28: float, v29: float, v30: float
+                             n0 = add v25 v21
+                             n1 = mul v24 13.0
                              n2 = add n0 n1
-                             n3 = add v17 v16
-                             n4 = mul v18 13.0
+                             n3 = add v30 v26
+                             n4 = mul v29 13.0
                              n5 = add n3 n4
                              in (n2 n5,)}
                 pred_arg=v0
-                true_args=('n0', 'n1', v0, 'n2', 'n3', v1)
-                true_func={lambda v7 v8 v9 v10 v11 v12.
-                            # v7: float, v8: float, v9: float, v10: float, v11: float, v12: float
-                            n0 = add v8 v7
-                            n1 = mul v9 3.0
+                true_func={lambda v11 v12 v13 v14 v15 v16 v17 v18 v19 v20.
+                            # v11: float, v12: float, v13: float, v14: float, v15: float, v16: float, v17: float, v18: float, v19: float, v20: float
+                            n0 = add v13 v11
+                            n1 = mul v12 3.0
                             n2 = add n0 n1
-                            n3 = add v11 v10
-                            n4 = mul v12 3.0
+                            n3 = add v18 v16
+                            n4 = mul v17 3.0
                             n5 = add n3 n4
                             in (n2 n5,)} ] 
-  n7 = proj[ idx=0 ] n6
-  n8 = proj[ idx=1 ] n6
-  in (n7 n8,)}
-      """, str(mj.trace(mj.jvp(func, cache=False))(5., 1.).pp()))
-
-  def test_jvp_cond_different_input_arity(self):
-    """The conditional branches have different arity."""
-    def func(x1):
-      z = x1 * 2.
-      return mj.Ops.cond_ge(x1,
-                            lambda tv0, tv1: z + tv0 + tv1 + x1 * 3., (x1 * 4., x1),
-                            lambda fv: z + fv + x1 * 13., (x1 * 14.,))
-
-    def func_equiv(x1):
-      if x1 * 2. >= 0.:
-        return x1 * 2. + x1 * 5. + x1 * 3.
-      else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
-
-    self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
-    self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
-    self.assertAllClose((func_equiv(5.), 2. + 5. + 3.),
-                        mj.jvp(func)(5., 1.),
-                        check_dtypes=True)
-    self.assertAllClose((func_equiv(-5.), 2. + 14. + 13.),
-                        mj.jvp(func)(-5., 1.),
-                        check_dtypes=True)
-    self.assertMultiLineStrippedEqual("""
-{lambda v0 v1.
-  # v0: float, v1: float
-  n0 = mul v0 4.0
-  n1 = mul v0 2.0
-  n2 = mul v1 4.0
-  n3 = mul v1 2.0
-  n4 = mul v0 14.0
-  n5 = mul v1 14.0
-  n6 = cond_ge[ false_args=('n4', 'n1', v0, 'n5', 'n3', v1)
-                false_func={lambda v16 v17 v18 v19 v20 v21.
-                             # v16: float, v17: float, v18: float, v19: float, v20: float, v21: float
-                             n0 = add v17 v16
-                             n1 = mul v18 13.0
-                             n2 = add n0 n1
-                             n3 = add v20 v19
-                             n4 = mul v21 13.0
-                             n5 = add n3 n4
-                             in (n2 n5,)}
-                pred_arg=v0
-                true_args=('n0', v0, 'n1', v0, 'n2', v1, 'n3', v1)
-                true_func={lambda v8 v9 v10 v11 v12 v13 v14 v15.
-                            # v8: float, v9: float, v10: float, v11: float, v12: float, v13: float, v14: float, v15: float
-                            n0 = add v10 v8
-                            n1 = add n0 v9
-                            n2 = mul v11 3.0
-                            n3 = add n1 n2
-                            n4 = add v14 v12
-                            n5 = add n4 v13
-                            n6 = mul v15 3.0
-                            n7 = add n5 n6
-                            in (n3 n7,)} ] 
-  n7 = proj[ idx=0 ] n6
-  n8 = proj[ idx=1 ] n6
-  in (n7 n8,)}
+  n5 = proj[ idx=0 ] n4
+  n6 = proj[ idx=1 ] n4
+  in (n5 n6,)}
       """, str(mj.trace(mj.jvp(func, cache=False))(5., 1.).pp()))
 
 
   def test_jvp_cond_0(self):
     def func(x):
-      return mj.Ops.cond_ge(x, lambda tv: 1., (0.,), lambda fv: 0., (0.,))
+      return mj.Ops.cond_ge(x, lambda tv: 1., lambda fv: 0., (0.,))
 
     res = mj.jvp(func)(0., 3.)
     self.assertAllClose((1., 0.), res, check_dtypes=True)
@@ -418,13 +358,13 @@ class JvpTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                 lambda tv: (z + tv + x1 * 3., tv), (x1 * 4.,),
-                 lambda fv: (z + fv + x1 * 13., fv), (x1 * 14.,))
+                 lambda tv: (z + tv + x1 * 3., tv),
+                 lambda fv: (z + fv + x1 * 13., fv), (x1 * 4.,))
     def func_equiv(x1):
       if x1 >= 0.:
         return (x1 * 2. + x1 * 4. + x1 * 3., x1 * 4.)
       else:
-        return (x1 * 2. + x1 * 14. + x1 * 13., x1 * 14.)
+        return (x1 * 2. + x1 * 4. + x1 * 13., x1 * 4.)
 
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
     self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
@@ -433,7 +373,7 @@ class JvpTest(jtu.JaxTestCase):
                         mj.jvp(func)(5., 1.),
                         check_dtypes=True)
     self.assertAllClose((func_equiv(-5.)[0], func_equiv(-5.)[1],
-                         2. + 14. + 13., 14.),
+                         2. + 4. + 13., 4.),
                         mj.jvp(func)(-5., 1.),
                         check_dtypes=True)
 

@@ -86,7 +86,7 @@ class FlopsTest(jtu.JaxTestCase):
     def func(x):
       return mj.Ops.cond_ge(x, # The conditional costs 1
                         # Both branches cost 1
-                        lambda tv: tv + tv, (x,),
+                        lambda tv: tv + tv,
                         lambda fv: fv * fv, (x * 2.,) # x * 2. costs 1
                         )
 
@@ -94,13 +94,12 @@ class FlopsTest(jtu.JaxTestCase):
 {lambda v0.
   # v0: float
   n0 = mul v0 2.0
-  n1 = cond_ge[ false_args=('n0',)
+  n1 = cond_ge[ args=('n0',)
                 false_func={lambda v2.
                              # v2: float
                              n0 = mul v2 v2
                              in n0}
                 pred_arg=v0
-                true_args=(v0,)
                 true_func={lambda v1.
                             # v1: float
                             n0 = add v1 v1
@@ -116,7 +115,7 @@ class FlopsTest(jtu.JaxTestCase):
     def func(x):
       return mj.Ops.cond_ge(x, # The conditional costs 1
                         # True branch costs 1 and false costs 2
-                        lambda tv: tv + tv, (x,),
+                        lambda tv: tv + tv,
                         lambda fv: fv * fv * fv, (x * 2.,) # x * 2. costs 1
                         )
 
@@ -124,14 +123,13 @@ class FlopsTest(jtu.JaxTestCase):
 {lambda v0.
   # v0: float
   n0 = mul v0 2.0
-  n1 = cond_ge[ false_args=('n0',)
+  n1 = cond_ge[ args=('n0',)
                 false_func={lambda v2.
                              # v2: float
                              n0 = mul v2 v2
                              n1 = mul n0 v2
                              in n1}
                 pred_arg=v0
-                true_args=(v0,)
                 true_func={lambda v1.
                             # v1: float
                             n0 = add v1 v1
@@ -143,12 +141,11 @@ class FlopsTest(jtu.JaxTestCase):
 {lambda v0.
   # v0: float
   n0 = mul v0 2.0
-  n1 = cond_ge[ false_args=('n0',)
+  n1 = cond_ge[ args=('n0',)
                 false_func={lambda v5.
                              # v5: float
                              in 2.0}
                 pred_arg=v0
-                true_args=(v0,)
                 true_func={lambda v4.
                             # v4: float
                             in 1.0} ] 
@@ -209,7 +206,7 @@ class FlopsTest(jtu.JaxTestCase):
       def inner(y):  # Cost: 1 + 1 + if y >= 0 then 1 else 2"
         return mj.Ops.cond_ge(y,  # The conditional costs 1
                    # True branch costs 1 and false costs 2
-                   lambda tv: tv + tv, (y,),
+                   lambda tv: tv + tv,
                    lambda fv: fv * fv * fv, (y * 2.,)
                    )
       return (mj.jit(inner)(z)  # Cost: 2 + (if z >= 0 then 3 else 4)
@@ -224,28 +221,26 @@ class FlopsTest(jtu.JaxTestCase):
   n1 = jit_call[ func={lambda v1.
                         # v1: float
                         n0 = mul v1 2.0
-                        n1 = cond_ge[ false_args=('n0',)
+                        n1 = cond_ge[ args=('n0',)
                                       false_func={lambda v3.
                                                    # v3: float
                                                    n0 = mul v3 v3
                                                    n1 = mul n0 v3
                                                    in n1}
                                       pred_arg=v1
-                                      true_args=(v1,)
                                       true_func={lambda v2.
                                                   # v2: float
                                                   n0 = add v2 v2
                                                   in n0} ] 
                         in n1} ] n0
   n2 = mul n0 2.0
-  n3 = cond_ge[ false_args=('n2',)
+  n3 = cond_ge[ args=('n2',)
                 false_func={lambda v5.
                              # v5: float
                              n0 = mul v5 v5
                              n1 = mul n0 v5
                              in n1}
                 pred_arg=n0
-                true_args=('n0',)
                 true_func={lambda v4.
                             # v4: float
                             n0 = add v4 v4
@@ -262,12 +257,11 @@ class FlopsTest(jtu.JaxTestCase):
   n1 = jit_call[ func={lambda v7.
                         # v7: float
                         n0 = mul v7 2.0
-                        n1 = cond_ge[ false_args=('n0',)
+                        n1 = cond_ge[ args=('n0',)
                                       false_func={lambda v9.
                                                    # v9: float
                                                    in 2.0}
                                       pred_arg=v7
-                                      true_args=(v7,)
                                       true_func={lambda v8.
                                                   # v8: float
                                                   in 1.0} ] 
@@ -278,12 +272,11 @@ class FlopsTest(jtu.JaxTestCase):
   n3 = add 1.0 n2
   n4 = add n3 1.0
   n5 = mul n0 2.0
-  n6 = cond_ge[ false_args=('n5',)
+  n6 = cond_ge[ args=('n5',)
                 false_func={lambda v11.
                              # v11: float
                              in 2.0}
                 pred_arg=n0
-                true_args=('n0',)
                 true_func={lambda v10.
                             # v10: float
                             in 1.0} ] 

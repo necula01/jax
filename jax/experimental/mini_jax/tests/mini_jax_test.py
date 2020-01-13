@@ -39,9 +39,9 @@ class MiniJaxTest(jtu.JaxTestCase):
     func_tr = mj.trace(func)
     res = func_tr(5.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      in 3.0}
+{lambda v0.
+  # v0: float
+  in 3.0}
     """, str(res.pp()))
 
   def test_trace_sharing(self):
@@ -56,13 +56,13 @@ class MiniJaxTest(jtu.JaxTestCase):
     func_tr = mj.trace(func)
     res = func_tr(5.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = add v0 v0
-      n1 = mul n0 n0
-      n2 = mul n1 n0
-      n3 = add n2 n2
-      in n3}
+{lambda v0.
+  # v0: float
+  n0 = add v0 v0
+  n1 = mul n0 n0
+  n2 = mul n1 n0
+  n3 = add n2 n2
+  in n3}
     """, str(res.pp()))
 
   def test_trace_captured_const(self):
@@ -75,11 +75,11 @@ class MiniJaxTest(jtu.JaxTestCase):
     func_tr = mj.trace(func)
     res = func_tr(5., 6.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0 v1.
-      # v0: float, v1: float
-      n0 = add v0 v1
-      n1 = add n0 1.0
-      in n1}
+{lambda v0 v1.
+  # v0: float, v1: float
+  n0 = add v0 v1
+  n1 = add n0 1.0
+  in n1}
     """, str(res.pp()))
 
   def test_jit_const(self):
@@ -96,13 +96,13 @@ class MiniJaxTest(jtu.JaxTestCase):
 
     func_tr = mj.trace(func)(5.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = add v0 1.0
-      n1 = jit_call[ func={lambda v1.
-                            # v1: float
-                            in 10.0} ] n0
-      in n1}
+{lambda v0.
+  # v0: float
+  n0 = add v0 1.0
+  n1 = jit_call[ func={lambda v1.
+                        # v1: float
+                        in 10.0} ] n0
+  in n1}
     """, str(func_tr.pp()))
     # Run the jit
     self.assertEqual(10., func(5.))
@@ -120,15 +120,15 @@ class MiniJaxTest(jtu.JaxTestCase):
 
     func_tr = mj.trace(func)(5., 6.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0 v1.
-      # v0: float, v1: float
-      n0 = add v0 1.0
-      n1 = jit_call[ func={lambda v2 v3.
-                            # v2: float, v3: float
-                            n0 = add v3 v2
-                            n1 = add n0 10.0
-                            in n1} ] n0 n0
-      in n1}
+{lambda v0 v1.
+  # v0: float, v1: float
+  n0 = add v0 1.0
+  n1 = jit_call[ func={lambda v2 v3.
+                        # v2: float, v3: float
+                        n0 = add v3 v2
+                        n1 = add n0 10.0
+                        in n1} ] n0 n0
+  in n1}
     """, str(func_tr.pp()))
     # Run the jit
     self.assertEqual(22., func(5., 6.))
@@ -144,23 +144,22 @@ class MiniJaxTest(jtu.JaxTestCase):
 
       return mj.jit(fun2)(x1)
 
-    fun1_jit = mj.jit(fun1)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = jit_call[ func={lambda v1.
-                            # v1: float
-                            n0 = mul v1 11.0
-                            n1 = jit_call[ func={lambda v2 v3 v1.
-                                                  # v2: float, v3: float, v1: float
-                                                  n0 = mul v1 12.0
-                                                  n1 = add v3 n0
-                                                  n2 = mul v2 22.0
-                                                  n3 = add n1 n2
-                                                  in n3} ] v1 n0 v1
-                            in n1} ] v0
-      in n0} 
-    """, str(mj.trace(fun1_jit)(5.)))
+{lambda v0.
+  # v0: float
+  n0 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = mul v1 11.0
+                        n1 = jit_call[ func={lambda v2 v1 v3.
+                                              # v2: float, v1: float, v3: float
+                                              n0 = mul v1 12.0
+                                              n1 = add v3 n0
+                                              n2 = mul v2 22.0
+                                              n3 = add n1 n2
+                                              in n3} ] v1 v1 n0
+                        in n1} ] v0
+  in n0}
+    """, str(mj.trace(mj.jit(fun1))(5.)))
 
   def test_jit_captured_computation_2(self):
     """Should not capture computations from shallower scope depths"""
@@ -182,32 +181,33 @@ class MiniJaxTest(jtu.JaxTestCase):
 
     fun1_jit = mj.jit(fun1)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = jit_call[ func={lambda v1.
-                            # v1: float
-                            n0 = mul v1 11.0
-                            n1 = jit_call[ func={lambda v2 v7 v3 v1.
-                                                  # v2: float, v7: float, v3: float, v1: float
-                                                  n0 = mul v1 12.0
-                                                  n1 = add v3 n0
-                                                  n2 = mul v2 22.0
-                                                  n3 = add n1 n2
-                                                  n4 = jit_call[ func={lambda v4 v5 v6 v2 v1.
-                                                                        # v4: float, v5: float, v6: float, v2: float, v1: float
-                                                                        n0 = mul v5 13.0
-                                                                        n1 = mul v6 23.0
-                                                                        n2 = add n0 n1
-                                                                        n3 = mul v2 23.0
-                                                                        n4 = add n2 n3
-                                                                        n5 = mul v2 23.0
-                                                                        n6 = add n4 n5
-                                                                        n7 = mul v1 v1
-                                                                        n8 = add n6 n7
-                                                                        in n8} ] v2 v7 n3 v2 v1
-                                                  in n4} ] v1 n0 n0 v1
-                            in n1} ] v0
-      in n0}
+{lambda v0.
+  # v0: float
+  n0 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = mul v1 11.0
+                        n1 = jit_call[ func={lambda v2 v1 v3 v7.
+                                              # v2: float, v1: float, v3: float, v7: float
+                                              n0 = mul v1 12.0
+                                              n1 = add v3 n0
+                                              n2 = mul v2 22.0
+                                              n3 = add n1 n2
+                                              n4 = jit_call[ func={lambda v4 v1 v2 v5 v6.
+                                                                    # v4: float, v1: float, v2: float, v5: float, v6: float
+                                                                    n0 = mul v5 13.0
+                                                                    n1 = mul v6 23.0
+                                                                    n2 = add n0 n1
+                                                                    n3 = mul v2 23.0
+                                                                    n4 = add n2 n3
+                                                                    n5 = mul v2 23.0
+                                                                    n6 = add n4 n5
+                                                                    n7 = mul v1 v1
+                                                                    n8 = add n6 n7
+                                                                    in n8} ] v2 v1 v2 v7 n3
+                                              in n4} ] v1 v1 n0 n0
+                        in n1} ] v0
+  in n0}
+
     """, str(mj.trace(fun1_jit)(5.)))
 
   def test_jit_return_tuple(self):
@@ -219,17 +219,17 @@ class MiniJaxTest(jtu.JaxTestCase):
     func_jit = mj.jit(func)
     func_tr = mj.trace(func_jit)(5.)
     self.assertMultiLineStrippedEqual("""
-    {lambda v0.
-      # v0: float
-      n0 = jit_call[ func={lambda v1.
-                            # v1: float
-                            n0 = add v1 1.0
-                            n1 = mul v1 2.0
-                            in (n0 n1 5.0,)} ] v0
-      n1 = proj[ idx=0 ] n0
-      n2 = proj[ idx=1 ] n0
-      n3 = proj[ idx=2 ] n0
-      in (n1 n2 n3,)}
+{lambda v0.
+  # v0: float
+  n0 = jit_call[ func={lambda v1.
+                        # v1: float
+                        n0 = add v1 1.0
+                        n1 = mul v1 2.0
+                        in (n0 n1 5.0,)} ] v0
+  n1 = proj[ idx=0 ] n0
+  n2 = proj[ idx=1 ] n0
+  n3 = proj[ idx=2 ] n0
+  in (n1 n2 n3,)}
     """, str(func_tr.pp()))
     self.assertEqual((6., 10., 5.), func(5.))
     # Call the jitted function
@@ -239,33 +239,31 @@ class MiniJaxTest(jtu.JaxTestCase):
     outside = 1.
 
     def func(x, y):
-      x += 10.
+      y = x + 10.
 
       def inner(z):
         return z + x + outside
 
-      return mj.jit(inner)(x)
+      return mj.jit(inner)(y)
 
-    self.assertEqual(31., func(5., 6.))
-
-    func_jit = mj.jit(func)
-    func_tr = mj.trace(func_jit)(5., 6.)
+    func_tr = mj.trace(mj.jit(func))(5., 6.)
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
   # v0: float, v1: float
   n0 = jit_call[ func={lambda v2 v3.
                         # v2: float, v3: float
                         n0 = add v2 10.0
-                        n1 = jit_call[ func={lambda v4 v5.
-                                              # v4: float, v5: float
-                                              n0 = add v4 v5
+                        n1 = jit_call[ func={lambda v4 v2.
+                                              # v4: float, v2: float
+                                              n0 = add v4 v2
                                               n1 = add n0 1.0
-                                              in n1} ] n0 n0
+                                              in n1} ] n0 v2
                         in n1} ] v0 v1
   in n0}
     """, str(func_tr.pp()))
 
-    self.assertEqual(31., func_jit(5., 6.))
+    self.assertEqual(21., func(5., 6.))
+    self.assertEqual(21., mj.jit(func)(5., 6.))
 
   def test_jit_two_calls(self):
     enable_jit = False
@@ -316,36 +314,34 @@ class MiniJaxTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                            lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                            lambda fv: z + x1 * 13., (x1 * 14.,))
+                            lambda tv: z + tv + x1 * 3.,
+                            lambda fv: z + x1 * 13., (x1 * 4.,))
 
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
+        return x1 * 2. + x1 * 4. + x1 * 13.
 
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
   # v0: float
   n0 = mul v0 4.0
   n1 = mul v0 2.0
-  n2 = mul v0 14.0
-  n3 = cond_ge[ false_args=('n2', 'n1', v0)
-                false_func={lambda v3 v4 v0.
-                             # v3: float, v4: float, v0: float
+  n2 = cond_ge[ args=('n0', v0, 'n1', v0, 'n1')
+                false_func={lambda v3 v7 v8 v0 v4.
+                             # v3: float, v7: float, v8: float, v0: float, v4: float
                              n0 = mul v0 13.0
                              n1 = add v4 n0
                              in n1}
                 pred_arg=v0
-                true_args=('n0', 'n1', v0)
-                true_func={lambda v1 v2 v0.
-                            # v1: float, v2: float, v0: float
+                true_func={lambda v1 v0 v2 v5 v6.
+                            # v1: float, v0: float, v2: float, v5: float, v6: float
                             n0 = add v2 v1
                             n1 = mul v0 3.0
                             n2 = add n0 n1
                             in n2} ] 
-  in n3}
+  in n2}
       """, str(mj.trace(func)(3.).pp()))
 
     self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
@@ -354,14 +350,14 @@ class MiniJaxTest(jtu.JaxTestCase):
     def func(x1):
       z = x1 * 2.
       return mj.Ops.cond_ge(x1,
-                            lambda tv: z + tv + x1 * 3., (x1 * 4.,),
-                            lambda fv: z + x1 * 13., (x1 * 14.,))
+                            lambda tv: z + tv + x1 * 3.,
+                            lambda fv: z + x1 * 13., (x1 * 4.,))
 
     def func_equiv(x1):
       if x1 >= 0.:
         return x1 * 2. + x1 * 4. + x1 * 3.
       else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
+        return x1 * 2. + x1 * 4. + x1 * 13.
 
     self.assertAllClose(func_equiv(5.), mj.jit(func)(5.), check_dtypes=True)
 
@@ -429,18 +425,17 @@ class MiniJaxTest(jtu.JaxTestCase):
         else:
           return xt - 3.
 
-      return mj.Ops.cond_ge(z, true_f, (z,), lambda _: 0., (0.,))
+      return mj.Ops.cond_ge(z, true_f, lambda _: 0., (z,))
 
     self.assertMultiLineStrippedEqual("""
 {lambda v0.
   # v0: float
   n0 = mul v0 2.0
-  n1 = cond_ge[ false_args=(0.0,)
+  n1 = cond_ge[ args=('n0',)
                 false_func={lambda v2.
                              # v2: float
                              in 0.0}
                 pred_arg=n0
-                true_args=('n0',)
                 true_func={lambda v1.
                             # v1: float
                             n0 = add v1 3.0
@@ -454,12 +449,11 @@ class MiniJaxTest(jtu.JaxTestCase):
 {lambda v0.
   # v0: float
   n0 = mul v0 2.0
-  n1 = cond_ge[ false_args=(0.0,)
+  n1 = cond_ge[ args=('n0',)
                 false_func={lambda v2.
                              # v2: float
                              in 0.0}
                 pred_arg=n0
-                true_args=('n0',)
                 true_func={lambda v1.
                             # v1: float
                             n0 = sub v1 3.0
@@ -541,8 +535,10 @@ class MiniJaxTest(jtu.JaxTestCase):
     def func(x):
       return x * 2.
 
-    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.), check_dtypes=True)
-    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.), check_dtypes=True)
+    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.),
+                        check_dtypes=True)
+    self.assertAllClose((2., 2.), mj.jvp(mj.jit(func))(1., 1.),
+                        check_dtypes=True)
     # We still hit the `func` cache for mj.jit
     self.assertEqual(dict(hits=1, misses=1), Cache.get_info(func))
 
@@ -589,6 +585,7 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
   def test_grad_jit_swap(self):
     """Compare the result if we swap grad and jit."""
+
     def func(x1, y1):
       return x1 * y1
 
@@ -597,11 +594,13 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
   def test_grad_undefined_under_jit(self):
     """JAX manages to have the while_loop on the stack trace when grad fails"""
+
     def func(x):
       def inner(y):
         return lax.while_loop(lambda acc: acc < y,
                               lambda acc: acc + 1.,
                               0.)
+
       return api.jit(inner)(x)
 
     with self.assertRaisesRegex(NotImplementedError,
@@ -679,3 +678,29 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
     self.assertAllClose(40., func(5.), check_dtypes=True)
     self.assertAllClose(-40., func(-5.), check_dtypes=True)
+
+  def test_jvp_jit_jax(self):
+    def func(x):
+      y = 2. * x
+
+      def inner(z):
+        return y * z
+
+      return 1. + y + api.jit(inner)(5.)
+
+    self.assertEqual((37., 60.), api.jvp(func, (3.,), (5.,)))
+    self.assertMultiLineStrippedEqual("""
+{ lambda e ;  ; a b.
+  let c = mul a 2.0
+      d = add c 1.0
+      f = mul b 2.0
+      g h = xla_call[ backend=None
+                      device=None ] 
+        { lambda b ; a d ; .
+          let c = mul a b
+              e = mul d b
+          in [c, e] } [ e ; c f ]
+      i = add d g
+      j = add_any f h
+  in [i, j] }""",
+      str(api.make_jaxpr(lambda x, y: api.jvp(func, (x,), (y,)))(3., 5.)))

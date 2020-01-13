@@ -81,10 +81,10 @@ class Jit(object):
     if e.operator == Operator.COND_GE:
       true_func_f = e.params["true_func"]
       true_func_compiled = Jit.compile_function_call(
-        true_func_f, args_s[1:1 + len(true_func_f.invars)], name)
+        true_func_f, args_s[1:], name)
       false_func_f = e.params["false_func"]
       false_func_compiled = Jit.compile_function_call(
-        false_func_f, args_s[1 + len(true_func_f.invars):], name)
+        false_func_f, args_s[1:], name)
       return (pp_str("if {} >= 0.:".format(args_s[0])) +
               true_func_compiled.indent(2) +
               pp_str("else:") +
@@ -184,7 +184,7 @@ def jit(func: Callable, cache: bool = True):
     and then execute it.
   """
 
-  def wrapped_jit(*args: Sequence[Value]):
+  def do_jit(*args: Sequence[Value]):
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=True,
                                                       cache=cache)
@@ -193,4 +193,4 @@ def jit(func: Callable, cache: bool = True):
                                   dict(func=func_f),
                                   list(args) + func_f_env)
 
-  return wrapped_jit
+  return do_jit

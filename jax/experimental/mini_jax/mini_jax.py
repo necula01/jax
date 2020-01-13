@@ -116,14 +116,13 @@ class Operator(enum.Enum):
     
   The arguments are in order:
     1 argument representing the value to be compared >= 0
-    `len(func_true.invars)` arguments to be passed to the `true_func`
-    `len(func_false.invars)` arguments to be passed to the `false_func`.
+    `len(func_true.invars) == len(func_false.invars)` arguments to be passed to 
+    the `true_func` and `false_func`.
     
   When pretty-printing, the arguments are actually shown as part of 
   parameters:
     pred_arg:
-    true_args: arguments to be passed to the `true_func`
-    false_args: arguments to be passed to the `false_func`
+    args: arguments to be passed to the `true_func` and `false_func`.
   """
 
   PROJECTION = "proj"
@@ -193,7 +192,7 @@ class Expr(object):
     """Standard evaluation of an application of an operator,
        given values or tracers for arguments.
 
-    If any of the arguments is a tracer, the result is a tracer, with the
+    If any of the arguments is a `Tracer`, the result is a `Tracer`, with the
     corresponding symbolic expression. If all arguments are Python concrete values,
     then the expression is evaluated and the result is a Python value.
 
@@ -219,6 +218,7 @@ class Expr(object):
       return args_v[0] > args_v[1]
     if op == Operator.PROJECTION:
       return args_v[0][params["idx"]]
+
     if op == Operator.JIT_CALL:
       func = params["func"]
       assert len(args_v) == len(func.invars)
@@ -234,16 +234,18 @@ class Expr(object):
     if op == Operator.COND_GE:
       true_func_f = params["true_func"]
       false_func_f = params["false_func"]
+      assert len(true_func_f.invars) == len(false_func_f.invars)
+      assert len(true_func_f.invars) + 1 == len(args_v)
       assert len(true_func_f.results) == len(false_func_f.results)
       all_concrete = all([not isinstance(a, Tracer) for a in args_v])
       if all_concrete:  # Arguments are all Python values => evaluate now
+        branch_args = args_v[1:1 + len(true_func_f.invars)]
         if args_v[0] >= 0.:
           # We use the jitter to evaluate the branch
-          return Jit.compile_and_execute(
-            true_func_f, args_v[1:1 + len(true_func_f.invars)])
+          return Jit.compile_and_execute(true_func_f, branch_args)
         else:
           return Jit.compile_and_execute(
-            false_func_f, args_v[1 + len(true_func_f.invars):])
+            false_func_f, branch_args)
 
       cond_t = Tracer.build(Operator.COND_GE, params,
                             map_tuple(Tracer.val_to_tracer, args_v),
@@ -331,8 +333,7 @@ class Expr(object):
         # Put the true_args and false_args among parameters, make it easier to read
         params = dict(**params)
         params["pred_arg"] = args[0]
-        params["true_args"] = args[1:1 + len(params["true_func"].invars)]
-        params["false_args"] = args[1 + len(params["true_func"].invars):]
+        params["args"] = args[1:1 + len(params["true_func"].invars)]
         args = []
       pp_args = pp_str(" ".join(map_list(str, args)))
       return (pp_str("{} = {}".format(name, e.operator)) >>
@@ -346,187 +347,9 @@ class Expr(object):
     return (pp_list(map_list(pp_binding, bindings), vertical=True) +
             result)
 
-
-class Function(object):
-  """Denotes a closed function in the symbolic expression language."""
-
-  def __init__(self,
-               invars: Sequence[Expr],
-               results: Sequence[Expr]):
-    """
-    If there are more than 1 results, then and only then the function returns
-    a tuple.
-
-    Args:
-      invars: the variables that occur in the results, including free variables.
-      results: a list of Expr that depedent only on the Vars in `invars`.
-    """
-    self.invars = invars
-    self.results = results
-
-  def __repr__(self):
-    return str(self.pp())
-
-  __str__ = __repr__
-
-  def pp(self):
-    """Pretty prints a function definition, using 3-address-codes."""
-    bindings, names = Expr.three_address_code(self.results)
-    return ((pp_str("{lambda ") >> pp_list(self.invars) >> pp_str(".")) +
-            (pp_str("  # ") >> pp_list(["{}: {}".format(v, v.etype)
-                                        for v in self.invars], hsep=", ")) +
-            Expr.pp_three_address_code(bindings, names).indent(2)
-            >> pp_str("}"))
-
-  @staticmethod
-  def trace_user_function(func: Callable,
-                          args_v: List[Value],
-                          abstract: bool = True,
-                          cache: bool = True,
-                          ) -> Tuple['Function', Sequence['Tracer']]:
-    """Traces a user function given values for the arguments.
-
-    Watches for usage (capture) of tracers from outer tracing, introduces new
-    variables for them, and returns them as extra arguments to be passed to
-    the closed Function.
-
-    Args:
-      func: a Python user function to trace using Tracer arguments.
-      args_v: the values corresponding to the `func` arguments. May be Python
-        concrete values, or Tracer values.
-      abstract: whether to force arguments to be abstract (no constants carried
-        in the Tracer, cheaper, but cannot handle data-dependent control-flow).
-      cache: whether to allow caching of the resulting Function. The result is
-        cached only if `abstract` and if there are no captured tracers.
-
-    Returns: a pair of a closed `Function` along with a list of tracers
-      captured from outer scopes used. The tail of the `invars` of the function
-      correspond to the captured tracers.
-    """
-    if cache:
-      cache_key = ("trace", map_tuple(ExprType.val_to_type, args_v))
-      # Do not cache when we do concolic testing, because the path may
-      # depend on actual concrete values.
-      result = Cache.get(func, cache_key) if abstract else None
-      if result is not None:
-        return result
-
-    Globals.scope_nesting_depth += 1
-    try:
-      scope_nesting_depth = Globals.scope_nesting_depth
-      args_t = [Tracer.new_var_tracer_from_val(arg_v, abstract=abstract)
-                for arg_v in args_v]
-      res = func(*args_t)
-      if not isinstance(res, tuple):
-        res = (res,)
-
-      # res may contain literals, turn them into Tracer
-      res_t = tuple(Tracer.val_to_tracer(r) for r in res)
-      res_e, res_env = Tracer.closure_convert(res_t, scope_nesting_depth)
-
-      freevars = []
-      freevars_env = []
-      for v, env_t in res_env:
-        if v not in freevars:  # We may have a variable twice in an environment
-          freevars.append(v)
-          freevars_env.append(env_t)
-
-      func_f = Function([v_t.expr for v_t in args_t] + freevars, res_e)
-      result = func_f, freevars_env
-      # Do not cache if we captured tracers
-      if cache and abstract and not freevars_env:
-        Cache.set(func, cache_key, result)
-      return result
-    finally:
-      Globals.scope_nesting_depth -= 1
-
-  def transform_function(
-      self,
-      transform_key: Any,
-      evaluator: Callable[['Function', Sequence['Tracer']], Any],
-      extra_args_typ: Sequence[ExprType] = None
-  ) -> 'Function':
-    """Runs a traceable evaluator over a Function to produce transformed Function.
-
-    This is the workhorse of composable transformations. Given an evaluator
-    that evaluates a `Function` with special semantics for operators and uses
-    only overloaded operations on the arguments, returns
-    the transformed `Function`.
-
-    Args:
-      transform_key: a hashable value to be used for caching the result
-        of the transformation (by `self`).
-      evaluator: a Python traceable function, that given a `Function` and
-        a set of Tracers evaluates the Function according to the transformed
-        semantics.
-      extra_args_typ: optional, the list of types of additional arguments for
-        the resulting function.
-
-    Returns:
-      a transformed Function.
-    """
-    result = Cache.get(self, transform_key)
-    if result is not None:
-      return result
-
-    # Start with the current arg types
-    args_typ = [iv.etype for iv in self.invars]
-    if extra_args_typ is not None:
-      args_typ += extra_args_typ
-    args_t = map_tuple(Tracer.new_var_tracer_from_type, args_typ)
-    res_t = evaluator(self, *args_t)
-    if not isinstance(res_t, tuple):
-      res_t = (res_t,)
-    # res may contain literals, turn them into Tracer
-    res_t = [Tracer.val_to_tracer(r) for r in res_t]
-    result = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
-    Cache.set(self, transform_key, result)
-    return result
-
-  def result_type(self):
-    """The result type of the function.
-    The result type is a tuple iff there are more than 1 results.
-    """
-    res = [result.etype for result in self.results]
-    return res[0] if len(res) == 1 else res
-
-  def make_evaluator(
-      self,
-      in_args_v: Sequence[Value],
-      eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
-      eval_operator: Callable[[Operator, Dict, Sequence[Value]], Value] = None,
-      **eval_params):
-    """Make a memoized expression evaluator for this Function.
-
-    Args:
-      in_args_v: the values for the Function invars.
-      eval_expr: an evaluator to be called (once) for each sub-expression,
-        given values for its arguments.
-      eval_operator: an evaluator to be called (once) for each operator,
-        given values for its arguments. Exactly one of `eval_expr` and
-        `eval_operator` must be given.
-      eval_params: keyword parameters to be passed to the eval functions.
-
-    Returns:
-      the list of values corresponding to the function results
-    """
-    assert len(self.invars) == len(in_args_v)
-    memo = {}
-    for iv, v in zip(self.invars, in_args_v):
-      memo[id(iv)] = v
-
-    def eval_expr_visitor(e, args_v):
-      if eval_expr is None:
-        return eval_operator(e.operator, e.params, args_v, **eval_params)
-      else:
-        return eval_expr(e, args_v, **eval_params)
-
-    return (lambda e: e.visit_expr(eval_expr_visitor, memo=memo))
-
-
-# An environment is a sequence of pairs of variables and the tracing values
-# they stand for from shallower scope depths.
-Environment = Sequence[Tuple[Expr, 'Tracer']]
+# An environment is a mapping of variables to the Tracers they stand for
+# from shallower scope depths.
+Environment = Dict[Expr, 'Tracer']
 
 
 class Tracer(object):
@@ -547,7 +370,7 @@ class Tracer(object):
       scope_nesting_depth: the scope depth at which it was built. May be `None`
         for literals.
       env: the environment for the expression: additional free variables
-        that appear in `expr` and the tracers they were introduced for.
+        that appear in `expr` along with the tracers they were introduced for.
       concrete: an optional Python constant representing the actual concrete
         Python value for this Tracer. It is used for deciding conditionals.
         This may be None for values computed from abstract function arguments
@@ -557,15 +380,6 @@ class Tracer(object):
     self.scope_nesting_depth = scope_nesting_depth
     self.env = env
     self.concrete = concrete
-
-  @staticmethod
-  def val_to_tracer(v: Value) -> 'Tracer':
-    """Make a Tracer from a Value."""
-    if isinstance(v, Tracer):
-      return v
-    v_et = ExprType.val_to_type(v)
-    return Tracer.build(Operator.LITERAL, dict(val=v), (), etype=v_et,
-                        concrete=v)
 
   def __repr__(self):
     op = self.expr.operator  # Special-case some operators, simplifies debugging
@@ -580,7 +394,17 @@ class Tracer(object):
   __str__ = __repr__
 
   @staticmethod
+  def val_to_tracer(v: Value) -> 'Tracer':
+    """Make a Tracer from a Value."""
+    if isinstance(v, Tracer):
+      return v
+    v_et = ExprType.val_to_type(v)
+    return Tracer.build(Operator.LITERAL, dict(val=v), (), etype=v_et,
+                        concrete=v)
+
+  @staticmethod
   def new_var_tracer_from_type(etype: ExprType) -> 'Tracer':
+    """Creates a new Tracer VAR with a given type."""
     return Tracer.build(Operator.VAR,
                         dict(id=next(Globals.variable_id)),
                         (), etype=etype)
@@ -614,11 +438,12 @@ class Tracer(object):
     with new variables, and an environment is constructed for these variables
     along with the expressions of the shallow tracers they represent.
     """
-    env = []  # Sequence[Environment]
+    env = {}  # Dict[Expr, Tracer]  - map VAR to a Tracer
     args_e = []  # Sequence[Expr]
     for a_t in args_t:
       if a_t.scope_nesting_depth is None or a_t.scope_nesting_depth == scope_nesting_depth:
-        env.extend(a_t.env)
+        # Duplicate VARs in the environment refer to the same Tracer
+        env.update(a_t.env)
         args_e.append(a_t.expr)
       else:
         assert a_t.scope_nesting_depth < scope_nesting_depth
@@ -627,7 +452,7 @@ class Tracer(object):
         else:
           new_v = Expr(Operator.VAR, (), etype=a_t.expr.etype,
                        id=next(Globals.variable_id))
-        env.append((new_v, a_t))
+        env[new_v] = a_t
         args_e.append(new_v)
 
     return (args_e, env)
@@ -650,12 +475,13 @@ class Tracer(object):
     Returns:
       a `Tracer` at the current scope nesting depth.
     """
-    args_ct = [arg_t.concrete for arg_t in args_t]
+    args_conc = [arg_t.concrete for arg_t in args_t]
     args_e, args_env = Tracer.closure_convert(args_t,
                                               Globals.scope_nesting_depth)
     expr = Expr(op, tuple(args_e), etype=etype, **params)
-    if concrete is None and args_t and all([ct is not None for ct in args_ct]):
-      concrete = Expr.eval_std_operator(op, params, args_ct)
+    # If all arguments are concrete, and want concrete tracing
+    if concrete is None and args_t and all([ct is not None for ct in args_conc]):
+      concrete = Expr.eval_std_operator(op, params, args_conc)
     return Tracer(expr, Globals.scope_nesting_depth, args_env,
                   concrete=concrete)
 
@@ -734,30 +560,214 @@ class Tracer(object):
   __bool__ = __nonzero__
 
 
+class Function(object):
+  """Denotes a closed function in the symbolic expression language."""
+
+  def __init__(self,
+               invars: Sequence[Expr],
+               results: Sequence[Expr]):
+    """
+    If there are more than 1 results, then and only then the function returns
+    a tuple.
+
+    Args:
+      invars: the variables that occur in the results, including free variables.
+        These are VAR expressions.
+      results: a list of `Expr` that depend only on the VARs in `invars`.
+    """
+    self.invars = invars
+    self.results = results
+
+  def __repr__(self):
+    return str(self.pp())
+
+  __str__ = __repr__
+
+  def pp(self):
+    """Pretty prints a function definition, using 3-address-codes."""
+    bindings, names = Expr.three_address_code(self.results)
+    return ((pp_str("{lambda ") >> pp_list(self.invars) >> pp_str(".")) +
+            (pp_str("  # ") >> pp_list(["{}: {}".format(v, v.etype)
+                                        for v in self.invars], hsep=", ")) +
+            Expr.pp_three_address_code(bindings, names).indent(2)
+            >> pp_str("}"))
+
+  @staticmethod
+  def trace_user_function(func: Callable,
+                          args_v: List[Value],
+                          abstract: bool = True,
+                          cache: bool = True,
+                          ) -> Tuple['Function', Sequence['Tracer']]:
+    """Traces a user function given values for the arguments.
+
+    Watches for usage (capture) of tracers from outer tracing, introduces new
+    variables for them, and returns them as extra arguments to be passed to
+    the closed Function.
+
+    Args:
+      func: a Python user function to trace using Tracer arguments.
+      args_v: the values corresponding to the `func` arguments. May be Python
+        concrete values, or Tracer values.
+      abstract: whether to force arguments to be abstract (no constants carried
+        in the Tracer, cheaper, but cannot handle data-dependent control-flow).
+      cache: whether to allow caching of the resulting Function. The result is
+        cached only if `abstract` and if there are no captured tracers.
+
+    Returns: a pair of a closed `Function` along with a list of tracers
+      captured from outer scopes used. The tail of the `invars` of the function
+      correspond to the captured tracers.
+    """
+    if cache:
+      cache_key = ("trace", map_tuple(ExprType.val_to_type, args_v))
+      # Do not cache when we do concolic testing, because the path may
+      # depend on actual concrete values.
+      result = Cache.get(func, cache_key) if abstract else None
+      if result is not None:
+        return result
+
+    Globals.scope_nesting_depth += 1
+    try:
+      scope_nesting_depth = Globals.scope_nesting_depth
+      args_t = [Tracer.new_var_tracer_from_val(arg_v, abstract=abstract)
+                for arg_v in args_v]
+      res = func(*args_t)
+      if not isinstance(res, tuple):
+        res = (res,)
+
+      # res may contain literals, turn them into Tracer
+      res_t = tuple(Tracer.val_to_tracer(r) for r in res)
+      res_e, res_env = Tracer.closure_convert(res_t, scope_nesting_depth)
+
+      # The freevars from res_env. Sort by VAR id, for deterministic results
+      freevars = sorted(res_env.keys(), key=lambda v: v.params["id"])
+      freevars_env = [res_env[fv] for fv in freevars]
+
+      func_f = Function([v_t.expr for v_t in args_t] + freevars, res_e)
+      result = func_f, freevars_env
+      # Do not cache if we captured tracers
+      if cache and abstract and not freevars_env:
+        Cache.set(func, cache_key, result)
+      return result
+    finally:
+      Globals.scope_nesting_depth -= 1
+
+  def transform_function(
+      self,
+      transform_key: Any,
+      evaluator: Callable[['Function', Sequence['Tracer']], Any],
+      extra_args_typ: Sequence[ExprType] = None
+  ) -> 'Function':
+    """Runs a traceable evaluator over a Function to produce transformed Function.
+
+    This is the workhorse of composable transformations. Given an evaluator
+    that evaluates a `Function` with special semantics for operators and uses
+    only overloaded operations on the arguments, returns the transformed
+    `Function`.
+
+    Args:
+      transform_key: a hashable value to be used for caching the result
+        of the transformation (by `self`).
+      evaluator: a Python traceable function, that given a `Function` and
+        a set of Tracers evaluates the Function according to the transformed
+        semantics.
+      extra_args_typ: optional, the list of types of additional arguments for
+        the resulting function.
+
+    Returns:
+      a transformed Function.
+    """
+    result = Cache.get(self, transform_key)
+    if result is not None:
+      return result
+
+    # Start with the current arg types
+    args_typ = [iv.etype for iv in self.invars]
+    if extra_args_typ is not None:
+      args_typ += extra_args_typ
+    args_t = map_tuple(Tracer.new_var_tracer_from_type, args_typ)
+    res_t = evaluator(self, *args_t)
+    if not isinstance(res_t, tuple):
+      res_t = (res_t,)
+    # res may contain literals, turn them into Tracer
+    res_t = [Tracer.val_to_tracer(r) for r in res_t]
+    result = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
+    Cache.set(self, transform_key, result)
+    return result
+
+  def result_type(self):
+    """The result type of the function.
+    The result type is a tuple iff there are more than 1 results.
+    """
+    res = [result.etype for result in self.results]
+    return res[0] if len(res) == 1 else res
+
+  def make_evaluator(
+      self,
+      in_args_v: Sequence[Value],
+      eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
+      eval_operator: Callable[[Operator, Dict, Sequence[Value]], Value] = None,
+      **eval_params):
+    """Make a memoized expression evaluator for this Function.
+
+    Args:
+      in_args_v: the values for the Function invars.
+      eval_expr: an evaluator to be called (once) for each sub-expression,
+        given values for its arguments.
+      eval_operator: an evaluator to be called (once) for each operator,
+        given values for its arguments. Exactly one of `eval_expr` and
+        `eval_operator` must be given.
+      eval_params: keyword parameters to be passed to the eval functions.
+
+    Returns:
+      the list of values corresponding to the function results
+    """
+    assert len(self.invars) == len(in_args_v)
+    memo = {}
+    for iv, v in zip(self.invars, in_args_v):
+      memo[id(iv)] = v
+
+    def eval_expr_visitor(e, args_v):
+      if eval_expr is None:
+        return eval_operator(e.operator, e.params, args_v, **eval_params)
+      else:
+        return eval_expr(e, args_v, **eval_params)
+
+    return (lambda e: e.visit_expr(eval_expr_visitor, memo=memo))
+
+
 class Ops(object):
   """Special primitive operations that operate either on values of tracers"""
 
   @staticmethod
-  def cond_ge(to_test: Value, true_func: Callable, true_args: Sequence[Value],
-              false_func: Callable, false_args: Sequence[Value]
+  def cond_ge(to_test: Value, true_func: Callable,
+              false_func: Callable, args: Sequence[Value]
               ) -> Sequence[Value]:
     # Collect the branch functions
-    if (not isinstance(true_args, (list, tuple)) or
-        not isinstance(false_args, (list, tuple))):
-      raise TypeError("true_args and false_args must be tuples for cond_ge")
+    if (not isinstance(args, (list, tuple))):
+      raise TypeError("args must be tuples for cond_ge")
 
     true_func_f, true_func_env = (
-      Function.trace_user_function(true_func, true_args, abstract=False))
+      Function.trace_user_function(true_func, args, abstract=False))
     false_func_f, false_func_env = (
-      Function.trace_user_function(false_func, false_args, abstract=False))
+      Function.trace_user_function(false_func, args, abstract=False))
     assert str(true_func_f.result_type()) == str(false_func_f.result_type()), (
       "{} != {}".format(true_func_f.result_type(), false_func_f.result_type()))
+    # Merge the true_func_env and false_func_env
+    merged_func_env: Sequence[Tracer] = true_func_env + false_func_env
+    def mk_new_var(t: Tracer) -> Expr:
+      return Expr(Operator.VAR, (), etype=t.expr.etype,
+                  id=next(Globals.variable_id))
+    true_func_f.invars = true_func_f.invars + [mk_new_var(t) for t in
+                                               false_func_env]
+    false_func_f.invars = (false_func_f.invars[0:len(args)] +
+                           [mk_new_var(t) for t in true_func_env] +
+                           false_func_f.invars[len(args):])
+
+    # Update the functions
     return Expr.eval_std_operator(
       Operator.COND_GE,
       dict(true_func=true_func_f, false_func=false_func_f),
-      tuple(itertools.chain([to_test],
-                            true_args, true_func_env,
-                            false_args, false_func_env)))
+      tuple(itertools.chain([to_test], args, merged_func_env)))
 
 
 class Cache(object):
@@ -802,7 +812,7 @@ def trace(func: Callable, abstract: bool = True,
     abstract during tracing.
   """
 
-  def wrapped_trace(*args: Sequence[Value]):
+  def do_trace(*args: Sequence[Value]):
     assert Globals.scope_nesting_depth == 0, "Outside any other tracers"
     Globals.reset()  # Produces more deterministic results
     func_f, func_f_env = Function.trace_user_function(func, args,
@@ -811,7 +821,7 @@ def trace(func: Callable, abstract: bool = True,
     assert not func_f_env  # We usually trace only outside other transformations
     return func_f
 
-  return wrapped_trace
+  return do_trace
 
 
 # Circular dependency Jit<->Mini-jax core
