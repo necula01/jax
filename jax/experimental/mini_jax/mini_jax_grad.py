@@ -69,11 +69,12 @@ from __future__ import division
 from __future__ import print_function
 
 import itertools
-from typing import Dict, Callable, Optional, Sequence
+from typing import cast, Dict, Callable, List, Optional, Sequence, Tuple
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value
+  Value, const_like, zero_like, zero_like_shape,
+  Shape
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -82,7 +83,7 @@ class Grad(object):
   """Methods related to backward differentiation."""
 
   def eval_function(self, func: Function,
-                    *args_out_adj: Sequence[Value]) -> Sequence[Value]:
+                    *args_out_adj: Value) -> Sequence[Value]:
     """Evaluates the function and its vector-Jacobian product.
 
     Care must be taken bound the work by a constant-factor over the number
@@ -103,8 +104,8 @@ class Grad(object):
 
     # First we build a graph with pointers to `Expr` parents
     # For each `Expr` (by `id`), the list of parents.
-    parents = {}  # Map[id(e)] -> Sequence[Expr]
-    var_leaves = []  # Sequence[Expr] (all the variables)
+    parents: Dict[int, List[Expr]] = {}
+    var_leaves: List[Expr] = []  # (all the variables)
 
     def reverse_expr_graph(e: Expr, parent: Optional[Expr]):
       e_par = parents.get(id(e))
@@ -118,18 +119,21 @@ class Grad(object):
         else:
           [reverse_expr_graph(a, e) for a in e.args]
 
-    adjoints = {}  # Dict[int, Value] - the accumulated adjoints
+    adjoints: Dict[int, Value] = {}  # the accumulated adjoints for sub-expressions
+    def add_adjoint(sube: Expr, adj: Value):
+      adjoints[id(sube)] = adjoints.get(id(sube), zero_like(adj)) + adj
+
     for result, result_out_adj in zip(func.results, out_adj):
       reverse_expr_graph(result, None)
       # The result may occur more than once
-      adjoints[id(result)] = adjoints.get(id(result), 0.) + result_out_adj
+      add_adjoint(result, result_out_adj)
 
     # Build a standard evaluator, used to evaluate lazily the values that are
     # needed from the forward pass.
     eval_std_expr = func.make_evaluator(args,
                                         eval_operator=Expr.eval_std_operator)
 
-    visited = {}  # By id
+    visited = {}  # By sub-expression id
 
     def visit_expr_backwards(e: Expr):
       """Visit all expressions, to accumulate adjoints for all expressions."""
@@ -141,16 +145,19 @@ class Grad(object):
       e_adj = adjoints[id(e)]
       self.add_subexpr_adjoints(e, e_adj, adjoints, eval_std_expr)
 
-    var_adjoints = {}
+    var_adjoints: Dict[Expr, Value] = {}  # The accumulated adjoints for variables
     for lvar in var_leaves:
       visit_expr_backwards(lvar)
-      var_adjoints[lvar] = var_adjoints.get(lvar, 0.) + adjoints[id(lvar)]
+      var_adjoints[lvar] = (
+          var_adjoints.get(lvar, zero_like(adjoints[id(lvar)])) +
+          adjoints[id(lvar)])
     # The unused vars get 0.
-    res = [var_adjoints.get(v, 0.) for v in func.invars]
+    res = [var_adjoints.get(v, zero_like_shape(v.etype.shape)) for v in func.invars]
     if len(func.invars) == 1:
-      return res[0]
+      return res[0]  # type: ignore[return-value]
     else:
       return tuple(res)
+
 
   def add_subexpr_adjoints(self, e: Expr,
                            out_adj: Value,
@@ -164,9 +171,8 @@ class Grad(object):
       adjoints: the dictionary of adjoints (by id(expr)).
       eval_expr: an expression evaluator.
     """
-
     def add_adjoint(sube: Expr, adj: Value):
-      adjoints[id(sube)] = adjoints.get(id(sube), 0.) + adj
+      adjoints[id(sube)] = adjoints.get(id(sube), zero_like(adj)) + adj
 
     if e.operator == Operator.VAR:
       return
@@ -177,7 +183,7 @@ class Grad(object):
       add_adjoint(e.args[1], out_adj)
     elif e.operator == Operator.SUB:
       add_adjoint(e.args[0], out_adj)
-      add_adjoint(e.args[1], out_adj * -1.)
+      add_adjoint(e.args[1], out_adj * const_like(-1., out_adj))
     elif e.operator == Operator.MUL:
       add_adjoint(e.args[0], out_adj * eval_std_expr(e.args[1]))
       add_adjoint(e.args[1], eval_std_expr(e.args[0]) * out_adj)
@@ -187,15 +193,15 @@ class Grad(object):
         add_adjoint(e.args[0], out_adj)
       elif pow != 0:
         add_adjoint(e.args[0],
-                    out_adj * float(pow) * eval_std_expr(e.args[0]) ** (
+                    out_adj * const_like(float(pow), out_adj) * eval_std_expr(e.args[0]) ** (
                           pow - 1))
     elif e.operator == Operator.PROJECTION:
       # We need to reach into the adjoints and increment only one element
       old_adj = adjoints.get(id(e.args[0]))
       if old_adj is None:
-        old_adj = [0.] * len(e.args[0].etype)
+        old_adj = [zero_like_shape(et.shape) for et in e.args[0].etype]  # type: ignore
         adjoints[id(e.args[0])] = old_adj
-      old_adj[e.params["idx"]] += out_adj
+      old_adj[e.params["idx"]] += out_adj  # type: ignore
 
     elif e.operator == Operator.JIT_CALL:
       """See comments at top of file."""
@@ -203,12 +209,12 @@ class Grad(object):
       vjp_func = self.transform_function(func)
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
-      args_v = map_list(eval_std_expr, e.args) + out_adj
+      args_v = map_list(eval_std_expr, e.args) + out_adj  # type: ignore
       arg_adj = Expr.eval_std_operator(Operator.JIT_CALL,
                                        dict(func=vjp_func),
                                        args_v)
       arg_adj = (arg_adj,) if len(func.invars) == 1 else arg_adj
-      for a, a_adj in zip(e.args, arg_adj):
+      for a, a_adj in zip(e.args, arg_adj):  # type: ignore
         add_adjoint(a, a_adj)
 
     elif e.operator == Operator.COND_GE:
@@ -217,20 +223,23 @@ class Grad(object):
       true_func_vjp = self.transform_function(true_func_f)
       false_func_f = e.params["false_func"]
       false_func_vjp = self.transform_function(false_func_f)
-      if not isinstance(out_adj, (tuple, list)):
-        out_adj = [out_adj]
-      assert len(out_adj) == len(true_func_f.results) == len(
-        false_func_f.results)
+
+      if isinstance(out_adj, (tuple, list)):
+        out_adj_list = cast(List[Value], out_adj)
+      else:
+        out_adj_list = [out_adj]
+      assert len(out_adj_list) == len(true_func_f.results) == len(false_func_f.results)
       # We need to evaluate the arguments, to reconstruct the cond
       args_v = map_list(eval_std_expr, e.args)
-      args_vjp_v = (args_v + out_adj)
+      args_vjp_v = (args_v + out_adj_list)
       args_adj = Expr.eval_std_operator(Operator.COND_GE,
                                         dict(true_func=true_func_vjp,
                                              false_func=false_func_vjp),
                                         args_vjp_v)
-      assert len(args_adj) == len(e.args) - 1
-      add_adjoint(e.args[0], 0.)  # The predicate arguments
-      for a, a_adj in zip(e.args[1:], args_adj):
+      args_adj_list = cast(List[Value], args_adj)
+      assert len(args_adj_list) == len(e.args) - 1
+      add_adjoint(e.args[0], 0.)  # The predicate argument is a scalar
+      for a, a_adj in zip(e.args[1:], args_adj_list):
         add_adjoint(a, a_adj)
     else:
       raise NotImplementedError
@@ -269,7 +278,9 @@ def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
                                                       cache=cache)
     assert len(func_f.results) == 1, (
       "grad is only defined for functions that return a single result")
-    res_grad = Grad().eval_function(func_f, *args, *func_f_env, 1.)
+    res_grad = Grad().eval_function(
+      func_f, *args, *func_f_env,
+      const_like(1., None, shape=func_f.results[0].etype.shape))
 
     if not isinstance(res_grad, tuple):
       res_grad = (res_grad,)

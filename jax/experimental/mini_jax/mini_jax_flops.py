@@ -54,8 +54,7 @@ FlopsVal = Value  # In principle, we could count more things
 class Flops(object):
   """Methods related to counting flops."""
 
-  def eval_function(self, func: Function, *args_v: Sequence[Value]
-                    ) -> Sequence[Value]:
+  def eval_function(self, func: Function, *args_v: Value) -> Value:
     # Prepare an expression evaluator for when flops are data-dependent
     eval_std_expr = func.make_evaluator(args_v,
                                         eval_operator=Expr.eval_std_operator)
@@ -64,16 +63,16 @@ class Flops(object):
     # of the expression may be used multiple times in parent expressions. To
     # ensure we only count once, we pass a mutable accumulator to the visitor,
     # instead of carrying the flops with the expression values.
-    accum_flops = [0.]  # type: List[Value]  - flops accumulator
-    eval_flops_expr = func.make_evaluator(args_v, eval_expr=self.eval_expr,
+    accum_flops: List[Value] = [0.]
+    eval_flops_expr = func.make_evaluator(args_v, eval_expr=self.eval_expr,  # type: ignore[arg-type]
                   eval_std_expr=eval_std_expr,
                   accum_flops=accum_flops)
     _ = [eval_flops_expr(result) for result in func.results]
     return accum_flops[0]
 
   def eval_expr(self, e: Expr, args_v: Sequence[FlopsVal],
-                eval_std_expr: Callable[[Expr], Value] = None,
-                accum_flops: List[FlopsVal] = None) -> FlopsVal:
+                eval_std_expr: Callable[[Expr], Value],
+                accum_flops: List[FlopsVal]) -> FlopsVal:
     """Computes the flops, excluding the flops of the arguments.
 
     Will be called one per distinct Expr object.
@@ -129,7 +128,7 @@ class Flops(object):
                false_func=false_func_flops),
           map_list(eval_std_expr, e.args))
         return accum(1. + res_cond)
-
+    assert False
 
 def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Callable:
   """Wrap a function into a flops counter.
@@ -146,7 +145,7 @@ def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Ca
     flops performed.
   """
 
-  def do_flops(*args: Sequence[Value]):
+  def do_flops(*args: Value):
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=abstract,
                                                       cache=cache)

@@ -21,7 +21,7 @@ from jax.pprint_util import PrettyPrint
 TA = TypeVar('TA')
 TB = TypeVar('TB')
 
-def map_tuple(f: Callable[[TA], TB], s: Sequence[TA]) -> Tuple[TB]:
+def map_tuple(f: Callable[[TA], TB], s: Sequence[TA]) -> Tuple[TB, ...]:
   return tuple(map(f, s))
 
 
@@ -41,7 +41,7 @@ def unzip(lst):
 def pp_str(s: str) -> PrettyPrint: return ppu.pp(s)
 
 
-def pp_list(lst: List, vertical=False, hsep=" ") -> PrettyPrint:
+def pp_seq(lst: Sequence, vertical=False, hsep=" ") -> PrettyPrint:
   """Apply pprint_util.pp to each element of a list and then concatenate
   Args:
     lst: a list of PrettyPrinter, or string

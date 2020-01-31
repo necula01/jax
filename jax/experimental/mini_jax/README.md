@@ -36,7 +36,10 @@ and optimizations have been simplified or omitted:
     mini-JAX can perform JVP and GRAD through Python control-flow that depends
     on the data being differentiated. 
   * The result of tracing user functions and applying transformations is cached.      
-  
+  * Only the `float` type and `numpy.ndarray(float)` types are supported and only
+    a few arithmetic operators (`+`, `-`, `*`, `**`). The arithmetic operators
+    do not implement implicit broadcasting.
+    
 * Omitted JAX features and optimizations:
 
   * In mini-JAX all transformations on a function are performed after tracing 
@@ -46,8 +49,6 @@ and optimizations have been simplified or omitted:
     as the JAXPR is generated (and often the JAXPR is not even materialized). 
     See below for a longer discussion of this difference between JAX and 
     mini-JAX.
-  * Only the `float` type is supported and only a few arithmetic operators (`+`, `-`, 
-    `*`, `**`). There are no tensors nor `numpy`.
   * Most higher-order primitives (`scan`, `while_loop`) are missing.  
   * There is no support for PyTrees, only floats and tuples of floats can be returned.
   * JIT in mini-JAX here means compiling to an executable Python string, no XLA.

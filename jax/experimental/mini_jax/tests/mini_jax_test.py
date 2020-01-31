@@ -592,43 +592,6 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     print(api.make_jaxpr(api.jit(api.grad(func, argnums=(0, 1))))(3., 4.))
     print(api.make_jaxpr(api.grad(api.jit(func), argnums=(0, 1)))(3., 4.))
 
-  def test_grad_undefined_under_jit(self):
-    """JAX manages to have the while_loop on the stack trace when grad fails"""
-
-    def func(x):
-      def inner(y):
-        return lax.while_loop(lambda acc: acc < y,
-                              lambda acc: acc + 1.,
-                              0.)
-
-      return api.jit(inner)(x)
-
-    with self.assertRaisesRegex(NotImplementedError,
-                                "Forward-mode differentiation rule for 'while' not implemented"):
-      print(api.make_jaxpr(api.grad(func))(3.))
-
-  def test_grad_cond(self):
-    """Gradient with conditional control-flow"""
-
-    def func(x1):
-      z = x1 * 2.
-      return lax.cond(x1 >= 0.,
-                      x1 * 4., lambda tv: z + tv + x1 * 3.,
-                      x1 * 14., lambda fv: z + fv + x1 * 13.)
-
-    def func_equiv(x1):
-      if x1 >= 0.:
-        return x1 * 2. + x1 * 4. + x1 * 3.
-      else:
-        return x1 * 2. + x1 * 14. + x1 * 13.
-
-    self.assertAllClose(func_equiv(5.), func(5.), check_dtypes=True)
-    self.assertAllClose(func_equiv(-5.), func(-5.), check_dtypes=True)
-    with self.assertRaisesRegex(NotImplementedError,
-                                "Forward-mode differentiation rule for 'cond' not implemented"):
-      self.assertAllClose(2. + 4. + 3.,
-                          api.grad(func)(5.),
-                          check_dtypes=True)
 
   def test_grad_concrete(self):
     """Gradient with concrete control-flow", and jit"""
@@ -655,17 +618,6 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     with self.assertRaisesRegex(TypeError, "Abstract value passed to `bool`"):
       print(api.make_jaxpr(api.grad(func, argnums=(0, 1)))(3., 4.))
 
-  def test_grad_concrete_cond(self):
-    """Gradient with concrete control-flow and cond"""
-
-    def func(x1, y1):
-      return lax.cond(x1 >= 0, y1, lambda tv: tv * 2., y1, lambda fv: fv * 3.)
-
-    with self.assertRaisesRegex(
-        NotImplementedError,
-        "Forward-mode differentiation rule for 'cond' not implemented"):
-      api.grad(func, argnums=(0, 1))(3., 4.)
-
   def test_jit_cache(self):
     def func(x):
       def inner(y):
@@ -679,28 +631,5 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     self.assertAllClose(40., func(5.), check_dtypes=True)
     self.assertAllClose(-40., func(-5.), check_dtypes=True)
 
-  def test_jvp_jit_jax(self):
-    def func(x):
-      y = 2. * x
 
-      def inner(z):
-        return y * z
 
-      return 1. + y + api.jit(inner)(5.)
-
-    self.assertEqual((37., 60.), api.jvp(func, (3.,), (5.,)))
-    self.assertMultiLineStrippedEqual("""
-{ lambda e ;  ; a b.
-  let c = mul a 2.0
-      d = add c 1.0
-      f = mul b 2.0
-      g h = xla_call[ backend=None
-                      device=None ] 
-        { lambda b ; a d ; .
-          let c = mul a b
-              e = mul d b
-          in [c, e] } [ e ; c f ]
-      i = add d g
-      j = add_any f h
-  in [i, j] }""",
-      str(api.make_jaxpr(lambda x, y: api.jvp(func, (x,), (y,)))(3., 5.)))

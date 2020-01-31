@@ -19,8 +19,10 @@ from __future__ import print_function
 
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
-
 from jax.config import config
+
+import numpy as np
+
 config.parse_flags_with_absl()
 FLAGS = config.FLAGS
 
@@ -418,3 +420,33 @@ class JvpTest(jtu.JaxTestCase):
 
     self.assertEqual((8., 5.), mj.jvp(func, abstract=False)(3., 5.))
     self.assertEqual((-3., 5. * 3.), mj.jvp(func, abstract=False)(-3., 5.))
+
+  def test_jvp_tensor(self):
+    shape = (3, 2)
+    def func(x):
+      y = np.arange(6, dtype=np.float32).reshape(shape)
+      return x * y + y - y
+
+    ones = np.ones(shape, dtype=np.float32)
+    self.assertMultiLineStrippedEqual("""
+{lambda v0 v1.
+  # v0: float[3,2], v1: float[3,2]
+  n0 = mul v0 array([[0., 1.],
+                  [2., 3.],
+                  [4., 5.]], dtype=float32)
+  n1 = add n0 array([[0., 1.],
+                  [2., 3.],
+                  [4., 5.]], dtype=float32)
+  n2 = sub n1 array([[0., 1.],
+                  [2., 3.],
+                  [4., 5.]], dtype=float32)
+  n3 = mul v1 array([[0., 1.],
+                  [2., 3.],
+                  [4., 5.]], dtype=float32)
+  in (n2 n3,)}
+  """,
+         str(mj.trace(mj.jvp(func))(ones, 2. * ones).pp()))
+
+    self.assertAllClose(np.arange(6, dtype=np.float32).reshape(shape),
+                        func(ones),
+                        check_dtypes=True)

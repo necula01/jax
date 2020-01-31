@@ -49,7 +49,7 @@ from typing import Any, Callable, List, Dict, NamedTuple, Tuple, Union, Sequence
 
 from jax.experimental import mini_jax as mj
 from jax.experimental.mini_jax.mini_jax import Operator, Globals
-from jax.experimental.mini_jax.mini_jax_util import pp_list, pp_str, \
+from jax.experimental.mini_jax.mini_jax_util import pp_seq, pp_str, \
   PrettyPrint, map_list
 
 import numpy as np
@@ -58,7 +58,7 @@ try:
   from hypothesis.strategies._internal.core import cacheable, \
     defines_strategy_with_reusable_values
 except ImportError:
-  def cacheable(f):
+  def cacheable(f):  # type: ignore
     return f
 
 
@@ -525,7 +525,7 @@ class Environment(object):
 
 
 class GlobalCounters(object):
-  coverage_counters = defaultdict(int)
+  coverage_counters: Dict[str, int] = defaultdict(int)
 
   @staticmethod
   def accum_counters(counters):
@@ -571,12 +571,12 @@ class JaxExampleStrategy(st.SearchStrategy):
         # Function declaration
         st.fixed_dictionaries(
           dict(kind=st.just("func_decl"),
-               nr_args=st.integers(min_value=1, max_value=2),
-               nr_res=st.integers(min_value=1, max_value=2))),
+               nr_args=st.integers(min_value=1, max_value=2),  # type: ignore[dict-item]
+               nr_res=st.integers(min_value=1, max_value=2))),  # type: ignore[dict-item]
         # One or more vars initialized from cond_ge
         st.fixed_dictionaries(dict(kind=st.just("var_decl_cond"),
-                                   nr_res=st.integers(min_value=1, max_value=2),
-                                   nr_ops=st.integers(min_value=1,
+                                   nr_res=st.integers(min_value=1, max_value=2),  # type: ignore[dict-item]
+                                   nr_ops=st.integers(min_value=1,  # type: ignore[dict-item]
                                                       max_value=2)))
       ]
     # Pick the body structure
@@ -651,9 +651,9 @@ class JaxExampleStrategy(st.SearchStrategy):
         args = [self.draw_expr_atom(data, env) for _ in range(nr_ops)]
 
         ops_pp = (
-            pp_str("(") >> pp_list(args, hsep=", ") >> pp_str(",)"))
-        cond_args = pp_list([pred, true_func_name,
-                             false_func_name, ops_pp],
+            pp_str("(") >> pp_seq(args, hsep=", ") >> pp_str(",)"))
+        cond_args = pp_seq([pred, true_func_name,
+                            false_func_name, ops_pp],
                             hsep=", ")
         cond_pp = (true_func_pp + false_func_pp +
                    (self.pp_vars_decl(var_names, pp_str(
@@ -675,7 +675,7 @@ class JaxExampleStrategy(st.SearchStrategy):
       env = env.add_vars(var_names)
       this_body_results.extend(var_names)
 
-    decls_pp = pp_list(body, vertical=True)
+    decls_pp = pp_seq(body, vertical=True)
 
     # Add a _result = sum(all vars)
 
@@ -692,10 +692,10 @@ class JaxExampleStrategy(st.SearchStrategy):
     results = []
     for res_idx in range(body_nr_res):
       results.append(pp_str("sum(") >>
-                     pp_list(this_body_results[res_idx * vars_per_result:(
+                     pp_seq(this_body_results[res_idx * vars_per_result:(
                                                                              res_idx + 1) * vars_per_result],
-                             hsep=", ") >> pp_str(")"))
-    results_pp = pp_list(results, hsep=", ")
+                            hsep=", ") >> pp_str(")"))
+    results_pp = pp_seq(results, hsep=", ")
     if env.depth == 0:
       put_result = "_result = "
     else:
@@ -722,10 +722,10 @@ class JaxExampleStrategy(st.SearchStrategy):
     if op == "**":
       # Keep exponent lower, to avoid numerical issues that make testing harder
       pow = st.integers(min_value=1, max_value=3).map(str).do_draw(data)
-      return pp_list([self.draw_expr_atom(data, env), "**", pow])
+      return pp_seq([self.draw_expr_atom(data, env), "**", pow])
     else:
-      return pp_list([self.draw_expr_atom(data, env), op,
-                      self.draw_expr_atom(data, env)])
+      return pp_seq([self.draw_expr_atom(data, env), op,
+                     self.draw_expr_atom(data, env)])
 
   def draw_func_decl(self, data, nr_args, nr_res, env):
     func_name = self.new_jax_name("f")
@@ -737,19 +737,19 @@ class JaxExampleStrategy(st.SearchStrategy):
     return func_name, arg_names, func_body
 
   def pp_vars_decl(self, var_names, var_init: PrettyPrint) -> PrettyPrint:
-    return pp_list(var_names, hsep=", ") >> pp_str(" = ") >> var_init
+    return pp_seq(var_names, hsep=", ") >> pp_str(" = ") >> var_init
 
   def pp_func_decl(self, func_name, arg_names,
                    func_body: PrettyPrint) -> PrettyPrint:
     header = (
         pp_str("def {}(".format(func_name)) >>
-        pp_list(arg_names, hsep=", ") >> pp_str("):"))
+        pp_seq(arg_names, hsep=", ") >> pp_str("):"))
     decls_pp = func_body  # Leaves the result in _result
     return header + decls_pp.indent(2)
 
   def pp_func_call(self, func_name, func_args) -> PrettyPrint:
     return (pp_str(func_name) >> pp_str("(") >>
-            pp_list(func_args, hsep=", ") >> pp_str(")"))
+            pp_seq(func_args, hsep=", ") >> pp_str(")"))
 
   def calc_has_reusable_values(self, recur):
     return True

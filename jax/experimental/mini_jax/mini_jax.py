@@ -22,20 +22,21 @@ from __future__ import print_function
 
 import enum
 import itertools
+import numpy as np
 import typing
 from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
 from jax.pprint_util import PrettyPrint, pp_kv_pairs
 from jax.experimental.mini_jax.mini_jax_util import (
   map_tuple, map_list, unzip,
-  pp_str, pp_list
+  pp_str, pp_seq
 )
 
 TA = typing.TypeVar('TA')
 TB = typing.TypeVar('TB')
 
 Value = Union[Any, 'Tracer']  # Either a Python concrete value, or a Tracer
-
+Shape = Tuple[int, ...]
 
 class Globals(object):
   variable_id = itertools.count()  # Unique ids for variables
@@ -53,7 +54,8 @@ class Globals(object):
 class ExprType(object):
   """Types for symbolic expressions and tracers."""
 
-  def __init__(self, dtype: type):
+  def __init__(self, shape: Shape, dtype: type):
+    self.shape = shape  # May be () for scalars
     self.dtype = dtype
 
   @staticmethod
@@ -62,25 +64,32 @@ class ExprType(object):
     if isinstance(v, Tracer):
       return v.expr.etype
     # Must be a constant
-    assert isinstance(v, (int, float)), "{}".format(v)
     if isinstance(v, int):
       raise NotImplementedError("integer constants not yet implemented")
     elif isinstance(v, float):
-      return ExprType(float)
+      return ExprType((), float)
+    elif isinstance(v, np.ndarray):
+      assert v.dtype == np.float32 or v.dtype == np.float64
+      return ExprType(v.shape, float)
     else:
       assert False, "{}".format(v)
 
   def __repr__(self):
-    return self.dtype.__name__
+    if not self.shape:
+      return self.dtype.__name__  # print "float" instead of "float[]"
+    else:
+      shape_str = ",".join([str(d) for d in self.shape])
+      return "{}[{}]".format(self.dtype.__name__, shape_str)
 
   __str__ = __repr__
 
   # we will use ExprType as hash keys for caching tracing results.
   def __hash__(self):
-    return hash(self.dtype.__name__)
+    return hash((self.dtype.__name__, self.shape))
 
   def __eq__(self, other):
-    return self.dtype.__name__ == other.dtype.__name__
+    return (self.dtype.__name__ == other.dtype.__name__ and
+            self.shape == other.shape)
 
 
 class Operator(enum.Enum):
@@ -158,7 +167,7 @@ class Expr(object):
     if self.operator == Operator.VAR:
       return "v{}".format(self.params['id'])
     elif self.operator == Operator.LITERAL:
-      return str(self.params['val'])
+      return repr(self.params['val'])
     else:
       # This is for debugging only, we normally pretty print entire functions
       bindings, names = Expr.three_address_code([self])
@@ -167,12 +176,13 @@ class Expr(object):
   __str__ = __repr__
 
   @staticmethod
-  def type_check(op: str, params: Dict,
+  def type_check(op: Operator, params: Dict,
                  args_et: Sequence[ExprType]) -> ExprType:
     """Computes the type for an operator application given types for arguments."""
     if op in (Operator.ADD, Operator.MUL, Operator.SUB):
       arg1_et, arg2_et = args_et
-      if arg1_et.dtype is float and arg2_et.dtype is float:
+      if (arg1_et.dtype is float and arg2_et.dtype is float and
+          arg1_et.shape == arg2_et.shape):
         return arg1_et
       raise TypeError("{} {} {}".format(op, arg1_et, arg2_et))
     if op == Operator.POW:
@@ -181,8 +191,9 @@ class Expr(object):
       raise TypeError("pow {}".format(args_et[0]))
     if op in (Operator.GE, Operator.GT):
       arg1_et, arg2_et = args_et
-      if arg1_et.dtype is float and arg2_et.dtype is float:
-        return bool
+      if (arg1_et.dtype is float and arg2_et.dtype is float and
+        arg1_et.shape == arg2_et.shape):
+        return ExprType((), bool)
       raise TypeError("{} {} {}".format(op, arg1_et, arg2_et))
     raise NotImplementedError
 
@@ -217,7 +228,7 @@ class Expr(object):
     if op == Operator.GT:
       return args_v[0] > args_v[1]
     if op == Operator.PROJECTION:
-      return args_v[0][params["idx"]]
+      return args_v[0][params["idx"]]  # type: ignore[index]
 
     if op == Operator.JIT_CALL:
       func = params["func"]
@@ -271,7 +282,7 @@ class Expr(object):
     sentinel = object()
 
     def do_visit(e: 'Expr') -> TA:
-      res = memo.get(id(e), sentinel)
+      res = memo.get(id(e), sentinel)  # type: ignore[arg-type]
       if res is not sentinel:
         return res
       args_v = map_tuple(do_visit, e.args)
@@ -281,8 +292,8 @@ class Expr(object):
     return do_visit(self)
 
   @staticmethod
-  def three_address_code(elst: List['Expr']) -> Tuple[List[Tuple[str, 'Expr']],
-                                                      List['Expr']]:
+  def three_address_code(elst: Sequence['Expr']) -> Tuple[Sequence[Tuple[str, 'Expr']],
+                                                          Sequence['Expr']]:
     """Converts a list of `Expr` to 3-address-codes.
 
     All sub-expressions that are not literals or `VAR` are turned into::
@@ -301,10 +312,10 @@ class Expr(object):
       a list of simple expressions corresponding to the input `elst`.
     """
     bindings = []  # List[Tuple(str, Expr)] list of bound non-simple Expr.
-    memo = dict()  # Share the memo across all expressions in the list
+    memo: Dict[int, Any] = dict()  # Share the memo across all expressions in the list
     name_id = itertools.count()  # New names local to this expression list
 
-    def visitor_simplify(e: 'Expr', args_v: Sequence[Expr]) -> Expr:
+    def visitor_simplify(e: 'Expr', args_v: Sequence[Expr]) -> Union[Expr, str]:
       """Simplification visitor.
       Returns:
         a simple expression.
@@ -341,10 +352,10 @@ class Expr(object):
               pp_str(" ") >> pp_args)
 
     if len(names) > 1:
-      result = pp_str("in (") >> pp_list(names) >> pp_str(",)")
+      result = pp_str("in (") >> pp_seq(names) >> pp_str(",)")
     else:
       result = pp_str("in {}".format(names[0]))
-    return (pp_list(map_list(pp_binding, bindings), vertical=True) +
+    return (pp_seq(map_list(pp_binding, bindings), vertical=True) +
             result)
 
 # An environment is a mapping of variables to the Tracers they stand for
@@ -359,6 +370,7 @@ class Tracer(object):
   representing the tracing value. It also carries information necessary for
   separating tracer values from outer scopes.
   """
+  __array_priority__ = 1000  # Take priority when overloading over numpy.ndarray
 
   def __init__(self, expr: Expr,
                scope_nesting_depth: int,
@@ -380,6 +392,8 @@ class Tracer(object):
     self.scope_nesting_depth = scope_nesting_depth
     self.env = env
     self.concrete = concrete
+    # We export a shape attribute
+    self.shape = expr.etype.shape
 
   def __repr__(self):
     op = self.expr.operator  # Special-case some operators, simplifies debugging
@@ -458,7 +472,7 @@ class Tracer(object):
     return (args_e, env)
 
   @staticmethod
-  def build(op: str, params: Dict,
+  def build(op: Operator, params: Dict,
             args_t: Sequence['Tracer'],
             etype: Optional[ExprType] = None,
             concrete: Optional[Value] = None
@@ -497,7 +511,7 @@ class Tracer(object):
       res_tuple = map_tuple(
         lambda idx: Tracer.build(Operator.PROJECTION,
                                  dict(idx=idx), (res,),
-                                 etype=res.expr.etype[idx]),
+                                 etype=res.expr.etype[idx]),  # type: ignore[index]
         range(len(res.expr.etype)))
       return res_tuple
     else:
@@ -505,29 +519,29 @@ class Tracer(object):
 
   ############## Overload Python operators
   def __add__(self, other: Value) -> 'Tracer':
-    if other == 0.: return self
+    if is_zero(other): return self
     return Tracer.build(Operator.ADD, {}, (self,
                                            self.val_to_tracer(other)))
 
   def __radd__(self, other: Value) -> 'Tracer':
-    if other == 0.: return self
+    if is_zero(other): return self
     return Tracer.build(Operator.ADD, {}, (self.val_to_tracer(other),
                                            self))
 
   def __mul__(self, other: Value) -> 'Tracer':
-    if other == 0.: return 0.
-    if other == 1.: return self
+    if is_zero(other): return zero_like(self)
+    if is_const(other, 1.): return self
     return Tracer.build(Operator.MUL, {}, (self,
                                            self.val_to_tracer(other)))
 
   def __rmul__(self, other: Value) -> 'Tracer':
-    if other == 0.: return 0.
-    if other == 1.: return self
+    if is_zero(other): return zero_like(self)
+    if is_const(other, 1.): return self
     return Tracer.build(Operator.MUL, {}, (self.val_to_tracer(other),
                                            self))
 
   def __sub__(self, other: Value) -> 'Tracer':
-    if other == 0.: return self
+    if is_zero(other): return self
     return Tracer.build(Operator.SUB, {}, (self,
                                            self.val_to_tracer(other)))
 
@@ -537,7 +551,7 @@ class Tracer(object):
 
   def __pow__(self, power: int) -> 'Tracer':
     assert isinstance(power, int)
-    if power == 0: return 1.
+    if power == 0: return const_like(1., self)
     if power == 1: return self
     return Tracer.build(Operator.POW, dict(pow=power), (self,))
 
@@ -551,7 +565,7 @@ class Tracer(object):
   def __nonzero__(self):
     # TODO: when is this exactly called?
     if self.concrete is not None:
-      assert self.expr.etype is bool
+      assert self.expr.etype.dtype is bool
       return self.concrete
     else:
       msg = "Boolean test not supported on abstract values"
@@ -586,15 +600,15 @@ class Function(object):
   def pp(self):
     """Pretty prints a function definition, using 3-address-codes."""
     bindings, names = Expr.three_address_code(self.results)
-    return ((pp_str("{lambda ") >> pp_list(self.invars) >> pp_str(".")) +
-            (pp_str("  # ") >> pp_list(["{}: {}".format(v, v.etype)
-                                        for v in self.invars], hsep=", ")) +
+    return ((pp_str("{lambda ") >> pp_seq(self.invars) >> pp_str(".")) +
+            (pp_str("  # ") >> pp_seq(["{}: {}".format(v, v.etype)
+                                       for v in self.invars], hsep=", ")) +
             Expr.pp_three_address_code(bindings, names).indent(2)
             >> pp_str("}"))
 
   @staticmethod
   def trace_user_function(func: Callable,
-                          args_v: List[Value],
+                          args_v: Sequence[Value],
                           abstract: bool = True,
                           cache: bool = True,
                           ) -> Tuple['Function', Sequence['Tracer']]:
@@ -654,7 +668,7 @@ class Function(object):
   def transform_function(
       self,
       transform_key: Any,
-      evaluator: Callable[['Function', Sequence['Tracer']], Any],
+      evaluator: Callable[..., Any],  # Takes a Function and a sequence of Tracer
       extra_args_typ: Sequence[ExprType] = None
   ) -> 'Function':
     """Runs a traceable evaluator over a Function to produce transformed Function.
@@ -703,9 +717,9 @@ class Function(object):
 
   def make_evaluator(
       self,
-      in_args_v: Sequence[Value],
-      eval_expr: Callable[[Expr, Sequence[Value]], Value] = None,
-      eval_operator: Callable[[Operator, Dict, Sequence[Value]], Value] = None,
+      in_args_v: Sequence[TA],
+      eval_expr: Optional[Callable[[Expr, Sequence[TA]], TA]] = None,
+      eval_operator: Optional[Callable[[Operator, Dict, Sequence[TA]], TA]] = None,
       **eval_params):
     """Make a memoized expression evaluator for this Function.
 
@@ -722,7 +736,7 @@ class Function(object):
       the list of values corresponding to the function results
     """
     assert len(self.invars) == len(in_args_v)
-    memo = {}
+    memo: Dict[int, TA] = {}
     for iv, v in zip(self.invars, in_args_v):
       memo[id(iv)] = v
 
@@ -741,11 +755,14 @@ class Ops(object):
   @staticmethod
   def cond_ge(to_test: Value, true_func: Callable,
               false_func: Callable, args: Sequence[Value]
-              ) -> Sequence[Value]:
+              ) -> Value:
     # Collect the branch functions
     if (not isinstance(args, (list, tuple))):
       raise TypeError("args must be tuples for cond_ge")
 
+    to_test_type = ExprType.val_to_type(to_test)
+    assert to_test_type.dtype is float and not to_test_type.shape, (
+      "guard of cond_ge must be a float: {}".format(to_test_type))
     true_func_f, true_func_env = (
       Function.trace_user_function(true_func, args, abstract=False))
     false_func_f, false_func_env = (
@@ -802,6 +819,39 @@ class Cache(object):
       setattr(obj, "_cache", cache)
     return cache
 
+def const_like(const: float, v: Value, shape: Optional[Shape] = None):
+  """A constant with the given shape, or the shape of the value"""
+  shape = val_to_shape(v) if shape is None else shape
+  if shape is None:
+    return const
+  else:
+    return const * np.ones(shape, dtype=np.float32)
+
+def zero_like(v: Value, shape: Optional[Shape] = None) -> Value:
+  """Zeros in the shape of a Value"""
+  return const_like(0., v, shape=shape)
+
+def zero_like_shape(shape: Optional[Shape]) -> Value:
+  """Zeros in the shape of a Value"""
+  return const_like(0., None, shape=shape)
+
+def is_const(v: Value, const: float) -> bool:
+  """Checks if all elements of the tensor are equal to `const`."""
+  return not isinstance(v, Tracer) and np.allclose(v, const_like(const, v))
+
+def is_zero(v: Value) -> bool:
+  """Checks if all elements of the tensor are 0."""
+  return is_const(v, 0.)
+
+def val_to_shape(v: Value):
+  if isinstance(v, np.ndarray):
+    return v.shape
+  elif isinstance(v, float):
+    return ()
+  elif isinstance(v, Tracer):
+    return v.expr.etype.shape
+  else:
+    assert False
 
 ############ TRACE ##############
 def trace(func: Callable, abstract: bool = True,
@@ -812,7 +862,7 @@ def trace(func: Callable, abstract: bool = True,
     abstract during tracing.
   """
 
-  def do_trace(*args: Sequence[Value]):
+  def do_trace(*args: Sequence[Value]) -> Function:
     assert Globals.scope_nesting_depth == 0, "Outside any other tracers"
     Globals.reset()  # Produces more deterministic results
     func_f, func_f_env = Function.trace_user_function(func, args,

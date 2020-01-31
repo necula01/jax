@@ -31,6 +31,7 @@ from __future__ import division
 from __future__ import print_function
 
 import functools
+import numpy as np
 import os
 from typing import Dict, Callable, Tuple, Sequence, List
 
@@ -39,7 +40,7 @@ from jax.experimental.mini_jax.mini_jax import (
   Value, Globals, Cache
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, \
-  pp_list, pp_str
+  pp_seq, pp_str
 from jax.pprint_util import PrettyPrint
 
 
@@ -47,7 +48,7 @@ class Jit(object):
   """Methods related to compilation."""
 
   @staticmethod
-  def compile_expr(e: Expr, args_s: Sequence[str], name: str) -> PrettyPrint:
+  def compile_expr_assigned(e: Expr, args_s: Sequence[str], name: str) -> PrettyPrint:
     """Compiles the application of an operator.
 
     Produces a PrettyPrint for assigning the result of the operator::
@@ -59,10 +60,8 @@ class Jit(object):
       args_s: the string forms of the *simple* arguments
       name: the name for assigning the result of computing the expression
     """
-    if e.operator == Operator.LITERAL:
-      return pp_str("{} = {}".format(name, str(e.params['val'])))
-    if e.operator == Operator.VAR:
-      return pp_str("{} = {}".format(name, str(e.params["id"])))
+    if e.operator in [Operator.LITERAL, Operator.VAR]:
+      return pp_str("{} = {}".format(name, Jit.compile_simple_expr(e)))
     if e.operator == Operator.ADD:
       return pp_str("{} = {} + {}".format(name, *args_s))
     if e.operator == Operator.SUB:
@@ -93,6 +92,18 @@ class Jit(object):
     raise NotImplementedError
 
   @staticmethod
+  def compile_simple_expr(e: Expr) -> str:
+    """Compiles a 'simple' expression, as from three_address_code."""
+    if isinstance(e, str):  # a name
+      return e
+    elif e.operator == Operator.LITERAL:
+      return repr(e.params['val'])
+    elif e.operator == Operator.VAR:
+      return str(e)
+    else:
+      assert False
+
+  @staticmethod
   def compile_function(func: Function) -> Tuple[str, PrettyPrint]:
     """Compile the function into a PrettyPrinter representing
     an executable Python string.
@@ -117,19 +128,20 @@ class Jit(object):
     bindings, names = Expr.three_address_code(func.results)
     func_name = "f{}".format(next(Globals.function_id))
     header = (pp_str("def {}(".format(func_name)) >>
-              pp_list(func.invars, hsep=", ") >> pp_str("):"))
+              pp_seq(func.invars, hsep=", ") >> pp_str("):"))
     header_types = (pp_str("  # ") >>
-                    pp_list(["{}: {}".format(v, v.etype)
-                             for v in func.invars], hsep=", "))
+                    pp_seq(["{}: {}".format(v, v.etype)
+                            for v in func.invars], hsep=", "))
 
     def compile_binding(bind):
       name, expr = bind
-      return Jit.compile_expr(expr, map_tuple(str, expr.args),
-                              name)
+      return Jit.compile_expr_assigned(expr,
+                                       map_tuple(Jit.compile_simple_expr, expr.args),
+                                       name)
 
-    body = pp_list(map_list(compile_binding, bindings), vertical=True)
+    body = pp_seq(map_list(compile_binding, bindings), vertical=True)
     if len(names) > 1:
-      result = pp_str("return (") >> pp_list(names, hsep=", ") >> pp_str(", )")
+      result = pp_str("return (") >> pp_seq(names, hsep=", ") >> pp_str(", )")
     else:
       result = pp_str("return {}".format(names[0]))
 
@@ -140,7 +152,7 @@ class Jit(object):
   @staticmethod
   def compile_function_call(func: Function,
                             args_s: Sequence[str], res_name: str
-                            ) -> Tuple[PrettyPrint]:
+                            ) -> PrettyPrint:
     """Compile the function and a call to it.
     Args:
       func: the function to compile
@@ -152,7 +164,7 @@ class Jit(object):
     """
     func_name, func_body = Jit.compile_function(func)
     func_call = (pp_str("{} = {}(".format(res_name, func_name)) >>
-                 pp_list(args_s, hsep=", ") >> pp_str(")"))
+                 pp_seq(args_s, hsep=", ") >> pp_str(")"))
     return func_body + func_call
 
   @staticmethod
@@ -165,12 +177,12 @@ class Jit(object):
     assert len(args) == len(func.invars)
     compiled = Jit.compile_function_call(func, map_tuple(str, func.invars),
                                          "_result")
-    locals = {str(iv): arg for iv, arg in zip(func.invars, args)}
+    fun_locals = {str(iv): arg for iv, arg in zip(func.invars, args)}
     compiled_str = str(compiled)
     if os.getenv("MINI_JAX_LOG_COMPILES", 0):
       print("Running compiled function:\n" + compiled_str)
-    exec(compiled_str, {}, locals)
-    return locals['_result']
+    exec(compiled_str, {"array": np.array, "float32": np.float32}, fun_locals)
+    return fun_locals['_result']
 
 
 def jit(func: Callable, cache: bool = True):
@@ -184,13 +196,13 @@ def jit(func: Callable, cache: bool = True):
     and then execute it.
   """
 
-  def do_jit(*args: Sequence[Value]):
+  def do_jit(*args: Value) -> Value:
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=True,
                                                       cache=cache)
     # Turn it into an Expr, or evaluate if none of the arguments are Tracer
     return Expr.eval_std_operator(Operator.JIT_CALL,
                                   dict(func=func_f),
-                                  list(args) + func_f_env)
+                                  list(args) + list(func_f_env))
 
   return do_jit

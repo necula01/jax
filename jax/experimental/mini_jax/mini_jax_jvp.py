@@ -30,7 +30,7 @@ from typing import Any, Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value
+  Value, zero_like
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, unzip
 
@@ -40,7 +40,7 @@ class Jvp(object):
 
   def eval_function(self,
                     func: Function,
-                    *args_and_tan: Sequence[Value]
+                    *args_and_tan: Value
                     ) -> Sequence[Value]:
     """Evaluates the JVP given Values for invars followed by the corresponding
     tangents.
@@ -80,7 +80,7 @@ class Jvp(object):
     if op == Operator.VAR:
       assert False
     if op == Operator.LITERAL:
-      return (params["val"], 0.)
+      return (params["val"], zero_like(params["val"]))
     if op == Operator.ADD:
       r = args_v[0] + args_v[1]
       r_tan = args_tan[0] + args_tan[1]
@@ -98,7 +98,7 @@ class Jvp(object):
       pow = params["pow"]
       r = args_v[0] ** pow
       if pow == 0:
-        r_tan = 0.
+        r_tan = zero_like(args_v[0])
       else:
         r_tan = float(pow) * args_v[0] ** (pow - 1) * args_tan[0]
       return (r, r_tan)
@@ -118,7 +118,7 @@ class Jvp(object):
         "jvp", Jvp().eval_function,
         extra_args_typ=[inv.etype for inv in func.invars])
       # Either build an Expr (if the args are tracers), or execute the JIT
-      return Expr.eval_std_operator(Operator.JIT_CALL,
+      return Expr.eval_std_operator(Operator.JIT_CALL,  # type: ignore[return-value]
                                     dict(func=jvp_func),
                                     args_v + args_tan)
 
@@ -132,7 +132,7 @@ class Jvp(object):
         "jvp", Jvp().eval_function,
         extra_args_typ=[inv.etype for inv in false_func_f.invars])
       # Either build an Expr (if the args are tracers), or execute the conditional
-      return Expr.eval_std_operator(
+      return Expr.eval_std_operator(  # type: ignore[return-value]
         Operator.COND_GE,
         dict(true_func=true_func_jvp,
              false_func=false_func_jvp),
@@ -155,7 +155,7 @@ def jvp(func: Callable, abstract: bool = True, cache: bool = True
     followed by their tangents.
   """
 
-  def do_jvp(*args_and_tangents: Sequence[Value]):
+  def do_jvp(*args_and_tangents: Value):
     assert len(args_and_tangents) % 2 == 0
     nr_args = len(args_and_tangents) // 2  # Arguments expected
     args = args_and_tangents[0:nr_args]
@@ -166,9 +166,9 @@ def jvp(func: Callable, abstract: bool = True, cache: bool = True
     if func_f_env:
       # Add also arguments for the freevars, with 0. tangents because for the point of view
       # of the current JVP we are only differentiating w.r.t. the arguments, not the freevars.
-      args_and_tangents = itertools.chain(args, func_f_env,
-                                          args_and_tangents[nr_args:],
-                                          [0. for c in func_f_env])
+      args_and_tangents = tuple(itertools.chain(args, func_f_env,
+                                                args_and_tangents[nr_args:],
+                                                [zero_like(c) for c in func_f_env]))
     res = Jvp().eval_function(func_f, *args_and_tangents)
     return res
 
