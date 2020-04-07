@@ -89,5 +89,11 @@ class _CustomPowerOp(CustomOperator):
     # We assume an implementation that repeatedly squares the argument.
     return float(math.ceil(math.log2(params["exp"])))
 
+  def eval_vmap(self, params: Dict, args_withb: Sequence[Tuple[Value, bool]],
+                batch_size:int) -> Tuple[Sequence[Value], Sequence[bool]]:
+    arg, arg_hasb = args_withb[0]
+    assert arg_hasb
+    return self.invoke(arg, **params), (arg_hasb,)
+
 customPowerOp = _CustomPowerOp()
 

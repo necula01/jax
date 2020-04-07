@@ -222,6 +222,15 @@ class PowerOp3(Example):
     return mj.customPowerOp.invoke_single(x, exp=3)
 
 
+class CallbackOp(Example):
+  def apply(self, x):
+    def acc_callback_fun(*args, transforms=()):
+      print("callback = ", tuple([*args, transforms]))
+
+    r, = mj.callback(acc_callback_fun)(x)
+    return r
+
+
 class LibraryTest(jtu.JaxTestCase):
 
   def test_one(self):
