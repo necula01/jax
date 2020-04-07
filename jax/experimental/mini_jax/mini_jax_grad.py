@@ -74,7 +74,7 @@ from typing import cast, Dict, Callable, List, Optional, Sequence, Tuple
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
   Value, const_like, zero_like, zero_like_shape,
-  Shape,
+  Shape, CustomOperator
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -237,6 +237,13 @@ class Grad(object):
       assert len(args_adj_list) == len(e.args) - 1
       add_adjoint(e.args[0], 0.)  # The predicate argument is a scalar
       for a, a_adj in zip(e.args[1:], args_adj_list):
+        add_adjoint(a, a_adj)
+
+    elif isinstance(e.operator, CustomOperator):
+      assert isinstance(out_adj, tuple)
+      args_adjoints = e.operator.eval_vjp(e.params, e.args, out_adj, eval_std_expr)
+      assert isinstance(args_adjoints, tuple) and len(args_adjoints) == len(e.args)
+      for a, a_adj in zip(e.args, args_adjoints):
         add_adjoint(a, a_adj)
 
     else:

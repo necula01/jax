@@ -37,7 +37,7 @@ from typing import cast, Any, Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Globals, Cache,
+  Value, Globals, Cache, CustomOperator
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, \
   pp_seq, pp_str
@@ -50,6 +50,10 @@ class Jit(object):
   _global_exec_context["array"] = np.array
   _global_exec_context["float32"] = np.float32
   _global_exec_context["np"] = np
+
+  @staticmethod
+  def register_global_exec_context(name: str, value: Any):
+    Jit._global_exec_context[name] = value
 
   @staticmethod
   def compile_expr_assigned(e: Expr, args_s: Sequence[str], name: str) -> PrettyPrint:
@@ -92,6 +96,10 @@ class Jit(object):
               true_func_compiled.indent(2) +
               pp_str("else:") +
               false_func_compiled.indent(2))
+
+    if isinstance(e.operator, CustomOperator):
+      return e.operator.compile_assigned(e.params, args_s,
+                                         cast(Tuple[ExprType, ...], e.etype), name)
 
     raise NotImplementedError(f"op is {e.operator}")
 

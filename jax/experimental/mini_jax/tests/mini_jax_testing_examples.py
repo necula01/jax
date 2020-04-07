@@ -217,6 +217,10 @@ class ConditionalTupleRes(Example2):
     ("ex2", (-2., 4.))
   )
 
+class PowerOp3(Example):
+  def apply(self, x):
+    return mj.customPowerOp.invoke_single(x, exp=3)
+
 
 class LibraryTest(jtu.JaxTestCase):
 

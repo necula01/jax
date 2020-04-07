@@ -30,7 +30,7 @@ from typing import Any, Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, zero_like, const_like,
+  Value, zero_like, const_like, CustomOperator
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, unzip
 
@@ -139,6 +139,12 @@ class Jvp(object):
              false_func=false_func_jvp),
         (args_v +  # pred and args
          args_tan[1:]))   # args_tan
+
+    if isinstance(op, CustomOperator):
+      res = op.eval_jvp(params, args_v, args_tan)
+      assert isinstance(res, tuple)
+      assert len(res) % 2 == 0
+      return res  # type: ignore[return-value]
 
     raise NotImplementedError(f"op is {op}")
 

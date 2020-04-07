@@ -147,6 +147,138 @@ class Operator(enum.Enum):
   __str__ = __repr__
 
 
+class CustomOperator(object):
+  """Custom operator, with custom evaluators.
+
+  All custom operators return tuples.
+
+  Attributes:
+    expected_params: list of parameter names that are expected.
+    defer_eval: defer the evaluation of the operator (construct a
+      symbolic expression), even when all the arguments are concrete.
+  """
+  def __init__(self, name: str,
+               *expected_params: str,
+               defer_eval: bool = False):
+    self.name = name
+    self.expected_params = set(expected_params)
+    self.defer_eval = defer_eval
+
+  def __repr__(self):
+    return "Op[{}]".format(self.name)
+
+  def invoke(self, *args: Value, **params: Any) -> Sequence[Value]:
+    """Invoke the custom operator in user code.
+    Must return a tuple for an operator with `multiple_results`.
+    """
+    if self.expected_params != set(params.keys()):
+      raise TypeError("{} expects parameters {}. Got {}.".format(
+        self, self.expected_params, set(params.keys())))
+    return Expr.eval_std_operator(cast(Operator, self), params, args)  # type: ignore[return-value]
+
+  def invoke_single(self, *args: Value, **params: Any) -> Value:
+    """Like invoke, but for operators that are known to return single values."""
+    res = self.invoke(*args, **params)
+    return single_element(res)
+
+  def eval_concrete(self, params: Dict, args: Sequence[Value]) -> Sequence[Value]:
+    """Standard evaluation of an application of an operator, given values for arguments.
+
+    Used only when the arguments are concrete values (not Tracers). If `defer_eval`
+    this is called only outside any transformation.
+    """
+    raise NotImplementedError("Must define eval_concrete for {}".format(self))
+
+  def type_check(self, params: Dict, args_t: Sequence[ExprType]) -> Sequence[ExprType]:
+    """Type check, given types for arguments.
+
+    Type checking is used even when evaluating the operator with concrete values.
+    """
+    raise NotImplementedError("Must define type_check for {}".format(self))
+
+  def compile_assigned(self, params: Dict, args_s: Sequence[str],
+                       e_types: Sequence[ExprType],
+                       name: str) -> PrettyPrint:
+    """Compiles the application of an operator.
+
+    Produces Python source in PrettyPrint format for assigning the result of the operator::
+
+       name = op(args_s[0], args_s[1])
+
+    See more details in mini_jax_jit.py.
+
+    Args:
+      params: the parameters of the operator
+      args_s: the string forms of the *simple* arguments
+      e_types: the types of the expression being compiled.
+      name: the name for assigning the result of computing the expression
+    """
+    raise NotImplementedError("Must define compile_assigned for {}".format(self))
+
+  def eval_jvp(self, params: Dict, args_v: Sequence[Value], args_tan: Sequence[Value]) -> Sequence[Value]:
+    """Evaluates the JVP of an operator application.
+
+    See more details in mini_jax_jvp.py.
+
+    Args:
+      params: the operator parameters
+      args_v: the primal values for the arguments
+      args_tan: the tangent values for the arguments
+    Returns:
+      a tuple with the primal results followed by the tangent results.
+    """
+    raise NotImplementedError("Must define eval_jvp for {}".format(self))
+
+  def eval_vjp(self, params: Dict, args: Sequence['Expr'], out_adj: Sequence[Value],
+               eval_std_expr: Callable[['Expr'], Value]) -> Sequence[Value]:
+    """Evaluates the VJP for an application of the operator.
+
+    See more details in mini_jax_grad.py.
+
+    Args:
+      params: the operator parameters
+      args: the primal arguments, as symbolic expressions
+      out_adj: the values of the output adjoints.
+      eval_std_expr: a standard evaluator for expressions. This can be used
+        to rematerialize values from the primal computation.
+    Returns:
+       the adjoints for the args, always a tuple, even if there is a single argument.
+    """
+    raise NotImplementedError("Must define eval_vjp for {}".format(self))
+
+  def eval_count_flops(self, params: Dict, args: Sequence['Expr'],
+                       eval_std_expr: Callable[['Expr'], Value]) -> Value:
+    """Evaluates the FLOPS counter of an operator application, excluding the FLOPS for computing arguments.
+
+    See more details in mini_jax_flops.py.
+
+    Args:
+      params: the operator parameters
+      args: the arguments of the operator application.
+      eval_std_expr: an evaluator for expressions, for cases when the
+        FLOPS count depends on the actual values of arguments.
+    Returns:
+      the value of the FLOPS for this operator application.
+    """
+    raise NotImplementedError("Must define eval_count_flops for {}".format(self))
+
+  def eval_vmap(self, params: Dict, args_withb: Sequence[Tuple[Value, bool]],
+                batch_size:int) -> Tuple[Sequence[Value], Sequence[bool]]:
+    """Evaluates the VMAP for an application of the operator.
+
+    See more details in mini_jax_vmap.py.
+
+    Args:
+      params: the operator parameters
+      args_withb: the argument values along with an indication whether they
+        are already batched.
+      batch_size: the batch size.
+    Returns:
+      a pair of primal results `Value` and whether they are batched.
+    """
+    raise NotImplementedError("Must define eval_vmap for {}".format(self))
+
+
 class Expr(object):
   """Symbolic typed expressions."""
 
@@ -266,6 +398,21 @@ class Expr(object):
                             map_tuple(Tracer.val_to_tracer, args_v),
                             etype=true_func_f.result_type())
       return Tracer.handle_tuple_result(cond_t)
+
+    if isinstance(op, CustomOperator):
+      # Type check the operator, even if we only need to evaluate it concretely
+      args_t = map_tuple(Tracer.val_to_tracer, args_v)
+      typ = op.type_check(params, tuple(a_t.expr.etype for a_t in args_t))
+      assert isinstance(typ, tuple)
+
+      all_concrete = all([not isinstance(a, Tracer) for a in args_v])
+      if all_concrete and (not op.defer_eval or Globals.scope_nesting_depth == 0):
+        res_concrete = op.eval_concrete(params, args_v)
+        assert isinstance(res_concrete, tuple)
+        return res_concrete
+      else:
+        res_v = Tracer.build(op, params, args_t, etype=typ)  # type: ignore[arg-type]
+        return Tracer.handle_tuple_result(res_v)
 
     raise NotImplementedError
 
@@ -502,7 +649,8 @@ class Tracer(object):
     expr = Expr(op, tuple(args_e), etype=etype, **params)
     # If all arguments are concrete, and want concrete tracing
     if concrete is None and args_t and all([ct is not None for ct in args_conc]):
-      concrete = Expr.eval_std_operator(op, params, args_conc)
+      if not (isinstance(op, CustomOperator) and op.defer_eval):
+        concrete = Expr.eval_std_operator(op, params, args_conc)
     return Tracer(expr, Globals.scope_nesting_depth, args_env,
                   concrete=concrete)
 

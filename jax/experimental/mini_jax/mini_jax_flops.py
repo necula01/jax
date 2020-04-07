@@ -44,7 +44,7 @@ from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value,
+  Value, CustomOperator
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -136,6 +136,9 @@ class Flops(object):
                false_func=false_func_flops),
           map_list(eval_std_expr, e.args))
         return accum(1. + res_cond)
+
+    if isinstance(e.operator, CustomOperator):
+      return accum(e.operator.eval_count_flops(e.params, e.args, eval_std_expr))
 
     raise NotImplementedError(f"op is {e.operator}")
 
