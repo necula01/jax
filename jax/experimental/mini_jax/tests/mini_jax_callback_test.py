@@ -215,5 +215,31 @@ class CallbackTest(jtu.JaxTestCase):
     # We logged the value of `y` on the primal computation, then the z_adjoint
     self.assertEqual([(2., ("vjp",))], self.acc)
 
+  def testVmap(self):
+    os.environ["MINI_JAX_LOG_COMPILES"] = "1"
+    def fun(x, y):
+      z = x * y
+      _, _, z = self.acc_callback(x, y, z)
+      return z + z
+
+    self.assertMultiLineStrippedEqual("""
+{lambda v0 v1.
+  # v0: float[3], v1: float
+  n0 = Op[bcast][ dim=0
+                  dim_sz=3 ] v1
+  n1 = proj[ idx=0 ] n0
+  n2 = mul v0 n1
+  n3 = Op[callback][ func=cb0
+                     transforms=('vmap',) ] v0 v1 n2
+  n4 = proj[ idx=2 ] n3
+  n5 = add n4 n4
+  in n5}
+              """, str(mj.trace(mj.vmap(fun, args_has_batch=(True, False)))(np.arange(3.), 5.).pp()))
+    res = mj.vmap(fun, args_has_batch=(True, False))(np.arange(3.), 5.)
+    self.assertAllClose(10. * np.arange(3.), res, check_dtypes=True)
+    self.assertEqual(str([(np.arange(3.), 5., 5. * np.arange(3.), ("vmap",))]),
+                     str(self.acc))
+
+
 if __name__ == "__main__":
   absltest.main()

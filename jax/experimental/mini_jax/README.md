@@ -24,7 +24,7 @@ and optimizations have been simplified or omitted:
     have been applied.
   * A conditionals higher-order primitive.
   * The following composable transformations: JVP (forward differentiation),
-    GRAD (reverse differentiation), 
+    GRAD (reverse differentiation), VMAP (vectorization), 
     FLOPS (a new toy transformation to estimate
     the FLOPS cost of the code, without
     actually running the computation, except as much as needed for when there
@@ -506,6 +506,117 @@ VJP is defined (simplistically) as follows:
 It turns out that addition and mutliplication are closed also under `vjp`. Adding
 a power operation (`e ** n`) to the set keeps it closed. Same for subtraction. 
 
+The story becomes more interesting with vectorization, or `vmap` (see details
+in `mini_jax_vmap.py` and `tests/mini_jax_vmap.py`).
+ 
+Vectorization, or `vmap` is a transformation for a function that
+takes arguments of rank k to a function that takes arguments or rank `k+1`.
+Vectorization is defined technically as follows
+(we use upper-case letter for index tuples, `,` as a tuple
+and element concatenation, and `a I` for the indexing operation, i.e.,
+):
+
+>  If `e` is an expression that depends on free variable `x` of shape `S`,
+>  and `b` is a positive integer, 
+>  then `vmap(e, b)` is an expression that depends on a free variable
+>  `xv` of shape `b,S` such that, for any array `a` of shape `S`:
+```
+      vmap(e, b) xv (i,I) = e(xv i) I  , for i in range(b)
+```
+
+(we used `xv i` as the partial application of `xv` to the index `i`, i.e., 
+`(xv i) I = xv (i, I)`.
+
+Most operators are already rank-polymorphic, so they do not need to be
+changed. Essentially:
+```
+
+  vmap (op x y, b) = op (vmap(x, b)) (vmap(y, b))
+```
+In mini-JAX two complications arise:
+
+First, we support vectorizing a function w.r.t. only a subset of its
+arguments. This is needed we apply `vmap` to an internal function that
+captures some values from the environment:
+```
+   y = 5
+   def fun(x):
+     # Assume `fun` was written to operate on scalars `x` and `y`
+     return x + y
+   vmap(fun, 4)(np.arange(4.))  # vmap(fun) operates on a vector argument
+```
+Here, the `x + y` operator must be changed to first broadcast the scalar
+`y` to the same vector size as `x`, then applying the rank-polymorphic
+`+` operator on vectors.
+
+To support broadcasting one may attempt to add a new primitive `bcast0(a, b0)`
+that broadcasts the array `a` around a new leading dimension of size `b0`.
+
+>  If `a` has shape `S` then `res = bcast0(a, b)` has shape `b,S` and
+>  for any I of size `|S|` and `i in range(b0)` we have `res (i,I) = a I`.
+
+This is not enough though because `bcast0` is not rank-polymorphic. When
+applying `vmap(bcast0(a, b0), b1)` we would need `bcast1(vmap(a, b1), b0)`,
+i.e., broadcasting along axis 1. This suggests, that we need to generalize
+broadcasting to `bcastdim(a, d, b)` (broadcast to size `b` in dimension `d`
+of the resulting array):
+
+For an array `a` and any indices sets `I`, `J`, (`|I| = d` and `|J| = |S| - d`),
+```
+bcastdim(a, d, b) (I,i,J) = a (I,J)  , for i in range(b).
+```
+
+This generalized broacast operator is closed under `vmap`:
+```
+  vmap(bcastdim(a, d, b0), b1) = bcastdim(vmap(a, b1), d+1, b0)
+```
+
+When computing the reverse AD for `bcastdim` we need to sum-up the
+contributions to the adjoint of all elements in the dimension `d`.
+Thus, we need to introduce a `sumdim` operators:
+
+>  If `a` is an array of shape `(S1,b,S2)` with `|S1|=d`,
+>  `sumdim(a, d)` has shape `(S1,S1)`, and
+>  `sumdim(a, d) (I,J)` = sum of `a[I,i,J] for i in range(b)`
+
+We can now define:
+```
+  vjp(bcastdim(a, d, b0)) = sumdim(vjp(a), d)
+```
+Fortunately, `sumdim`'s VJP is defined in terms of `bcastdim`:
+```
+  vjp(sumdim(a, d)) = bcastdim(vjp(a), d, b)
+```
+where `b` is the `d`th element of `shape(a)`. Also, `sumdim` is
+closed under VMAP:
+```
+  vmap(sumdim(a, d), b) = sumdim(vmap(a, b), d+1)
+```
+
+Another complication is that `cond_ge` is defined only
+for scalar predicates. When we vectorize, it is possible
+to need to vectorize the predicate. Thus, we generalize
+`cond_ge` into `where_ge`:
+
+>  If `a`, `t`, `f` are arrays of shape `S`, then
+```
+where_ge(a, t, f)[I] = if a[I] >= 0 then t[I] else F[I]
+```
+
+Unlike, `cond_ge` which only executes one branch of the conditional,
+`where_ge` executes always both branches and then picks the right
+element from each branch. `where_ge` is rank-polymorphic so it
+is closed under VMAP. It is also closed under VJP.
+
+The final complication we discuss here is that if a function has
+multiple outputs, and some of the outputs depend only on
+unvectorized inputs, then we want to leave the outputs unvectorized.
+This is true for the internal functions (e.g., in CALL_JIT, or COND_GE).
+At the top level (see `vmap` below), we vectorize all outputs. In real-JAX,
+there is a parameter to request some of the outputs to be left
+unvectorized (only if the do not depend on vectorized inputs).
+
+These operators are defined in `mini_jax_operators.py`.
 
 ### Ahead-of-time transformations through caching
 

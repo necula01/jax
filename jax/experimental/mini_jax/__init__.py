@@ -4,9 +4,11 @@ from __future__ import absolute_import
 from .mini_jax import trace
 from .mini_jax import Ops
 from .mini_jax_operators import (
-  CustomOperator, customPowerOp)
+  CustomOperator, customPowerOp, broadcastInDimOp, whereGeOp,
+  sumDimOp)
 from .mini_jax_flops import count_flops
 from .mini_jax_jvp import jvp
 from .mini_jax_grad import grad
 from .mini_jax_jit import jit
+from .mini_jax_vmap import vmap
 from .mini_jax_callback import callback

@@ -28,9 +28,6 @@ import numpy as np
 from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
 
-class NotImplementedTensorResult(Exception):
-  pass
-
 class GradTest(jtu.JaxTestCase):
 
   def helperTestGrad(self, func: Callable,
@@ -57,8 +54,8 @@ class GradTest(jtu.JaxTestCase):
         sum_res = zero_like_shape(shape)
         for r in res0:
           sum_res += r
-        if np.shape(sum_res):
-          raise NotImplementedTensorResult()
+        while np.shape(sum_res):
+          sum_res = mj.sumDimOp.invoke_single(sum_res, dim=0)
         return sum_res
       func = scalar_func
       res0 = func(*args)
@@ -72,14 +69,26 @@ class GradTest(jtu.JaxTestCase):
     numeric_grad = []  # One for each argument
     EPS = 0.001
     for i, a in enumerate(args):
-      # Perturb one arg; we must perturb each element of the tensor
-      # A sequence of all indices of all cells in args[i]
       ai_shape = np.shape(args[i])
-      assert not ai_shape
-      
-      eps_args = args[0:i] + (args[i] + EPS,) + args[i + 1:]
-      eps_res = func(*eps_args)
-      numeric_grad.append((eps_res - res0) / EPS)
+      if ai_shape:
+        # Perturb one arg; we must perturb each element of the tensor
+        # A sequence of all indices of all cells in args[i]
+        all_indices: Sequence[Sequence[int]] = tuple(itertools.product(
+          *[tuple(range(s)) for s in ai_shape]))
+        grad_argi = np.zeros(np.shape(args[i]))
+
+        for ind in all_indices:
+          eps_argi = np.zeros(np.shape(args[i]))
+          eps_argi[ind] = EPS
+          eps_args = args[0:i] + (args[i] + eps_argi,) + args[i + 1:]
+          eps_res = func(*eps_args)
+          grad_argi[ind] = (eps_res - res0) / EPS
+        numeric_grad.append(grad_argi)
+      else:
+        eps_args = args[0:i] + (args[i] + EPS,) + args[i + 1:]
+        eps_res = func(*eps_args)
+        numeric_grad.append((eps_res - res0) / EPS)
+
     if len(numeric_grad) == 1:
       numeric_grad = numeric_grad[0]
     else:
@@ -91,12 +100,9 @@ class GradTest(jtu.JaxTestCase):
   def test_grad_all_examples(self):
     """Test GRAD for all examples, numerically."""
     for ex in testex.iterate_examples():
-      #if ex.name != "SumDim0": continue
+      #if ex.name != "Add0_tensor": continue
       print(f"GRAD f or {ex.name}")
-      try:
-        self.helperTestGrad(ex.func, ex.args)
-      except NotImplementedTensorResult:
-        print(f"  skip due to tensor result")
+      self.helperTestGrad(ex.func, ex.args)
 
   def test_grad_simple(self):
     def func(x, y):

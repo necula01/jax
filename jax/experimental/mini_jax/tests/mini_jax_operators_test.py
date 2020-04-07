@@ -251,3 +251,45 @@ class CustomPowerOpTest(jtu.JaxTestCase):
 
     # Check that the grad uses the custom op
     self.assertEqual(1. + 2., mj.count_flops(func)(2.))
+
+class BroadcastInDimOpTest(jtu.JaxTestCase):
+
+  def test_eval(self):
+    self.assertAllClose(np.array([5., 5., 5.]),
+                        mj.broadcastInDimOp.invoke_single(5., dim=0, dim_sz=3),
+                        check_dtypes=True)
+
+    self.assertAllClose(np.stack([np.arange(3.), np.arange(3.)]),
+                        mj.broadcastInDimOp.invoke_single(np.arange(3.), dim=0, dim_sz=2),
+                        check_dtypes=True)
+
+    self.assertAllClose(np.array([[0., 0.],
+                                  [1., 1.],
+                                  [2., 2.]]),
+                        mj.broadcastInDimOp.invoke_single(np.arange(3.), dim=1, dim_sz=2),
+                        check_dtypes=True)
+
+  def test_invoke_error(self):
+    with self.assertRaisesRegex(TypeError,
+                                re.escape("Op[bcast] expects parameters")):
+      mj.broadcastInDimOp.invoke(1., dim=0)
+
+    with self.assertRaisesRegex(TypeError,
+                                re.escape("Unexpected 'dim' (1) for argument of shape ()")):
+      mj.broadcastInDimOp.invoke(1., dim=1, dim_sz=3)
+
+  def test_jit(self):
+    os.environ["MINI_JAX_LOG_COMPILES"] = "1"
+    def func(x):
+      return mj.broadcastInDimOp.invoke_single(x, dim=0, dim_sz=2)
+
+
+    self.assertAllClose(np.array([2., 2.]),
+                        mj.jit(func)(2.), check_dtypes=True)
+    self.assertAllClose(np.array([[0., 1], [0., 1.]]),
+                        mj.jit(func)(np.arange(2.)), check_dtypes=True)
+
+    def func(x):
+      return mj.broadcastInDimOp.invoke(x, dim=1, dim_sz=2)
+    self.assertAllClose(np.array([[0., 0], [1., 1.]]),
+                        mj.jit(func)(np.arange(2.)), check_dtypes=True)

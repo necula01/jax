@@ -221,6 +221,35 @@ class PowerOp3(Example):
   def apply(self, x):
     return mj.customPowerOp.invoke_single(x, exp=3)
 
+class BroadcastOp0(Example):
+  def apply(self, x):
+    return mj.broadcastInDimOp.invoke_single(x, dim=0, dim_sz=3)
+
+class BroadcastOp1(Example):
+  def apply(self, x):
+    return mj.broadcastInDimOp.invoke_single(x, dim=1, dim_sz=3)
+
+  ARG_CONSTRAINTS = (Example.CONSTRAINT_RANK_AT_LEAST_1,)
+
+class WhereOp0(Example):
+  def apply(self, x):
+    return mj.whereGeOp.invoke_single(x, x * const_like(2., x), x * const_like(3., x))
+
+class SumDim0(Example):
+  def apply(self, x):
+    return mj.sumDimOp.invoke_single(x, dim=0)
+
+  ARG_CONSTRAINTS = (Example.CONSTRAINT_RANK_AT_LEAST_1,)
+
+class SumDim1(Example):
+  def apply(self, x):
+    return mj.sumDimOp.invoke_single(x, dim=1)
+
+  ARG_CONSTRAINTS = (Example.CONSTRAINT_RANK_AT_LEAST_2,)
+
+  EXTRA_ARGS = (
+    ("ex1", (np.arange(6.).reshape((2, 3)),)),
+  )
 
 class CallbackOp(Example):
   def apply(self, x):
