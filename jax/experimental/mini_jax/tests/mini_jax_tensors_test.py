@@ -23,6 +23,7 @@ from jax.experimental.mini_jax.mini_jax import const_like
 from jax import api
 from jax import numpy as jnp
 from jax import lax
+from jax.experimental.mini_jax.tests import mini_jax_testing_examples as testex
 
 import numpy as np
 
@@ -69,26 +70,25 @@ class TensorsTest(jtu.JaxTestCase):
       y = x * const_like(2., x)
 
       return mj.Ops.cond_ge(x_test,
-                            lambda tv: tv + const_like(3., tv),
-                            (y * const_like(4., y),),
+                            lambda tv: tv + const_like(3., tv) + y,
                             lambda fv: x * const_like(13., x),
-                            (x * const_like(14., x),))
+                            (x * const_like(4., x),))
 
     def func_equiv(x_test, x):
       if x_test >= 0.:
-        return x * 2. * 4. + 3.
+        return x * 4. + 3. + x * 2.
       else:
         return x * 13.
 
     def func_jvp_equiv(x_test, x, x_test_tan, x_tan):
       if x_test >= 0.:
-        return (func_equiv(x_test, x), x_tan * 2. * 4.)
+        return (func_equiv(x_test, x), x_tan * 6.)
       else:
         return (func_equiv(x_test, x), x_tan * 13.)
 
     def func_grad_equiv(x_test, x):
       if x_test >= 0.:
-        return 0., const_like(8., x)
+        return 0., const_like(6., x)
       else:
         return 0., const_like(13., x)
 
@@ -98,31 +98,28 @@ class TensorsTest(jtu.JaxTestCase):
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
   # v0: float, v1: float[3,2]
-  n0 = mul v1 array([[2., 2.],
-                  [2., 2.],
-                  [2., 2.]], dtype=float32)
-  n1 = mul n0 array([[4., 4.],
+  n0 = mul v1 array([[4., 4.],
                   [4., 4.],
                   [4., 4.]], dtype=float32)
-  n2 = mul v1 array([[14., 14.],
-                  [14., 14.],
-                  [14., 14.]], dtype=float32)
-  n3 = cond_ge[ false_args=('n2', v1)
-                false_func={lambda v3 v1.
-                             # v3: float[3,2], v1: float[3,2]
+  n1 = mul v1 array([[2., 2.],
+                  [2., 2.],
+                  [2., 2.]], dtype=float32)
+  n2 = cond_ge[ args=('n0', 'n1', v1)
+                false_func={lambda v4 v6 v1.
+                             # v4: float[3,2], v6: float[3,2], v1: float[3,2]
                              n0 = mul v1 array([[13., 13.],
                                              [13., 13.],
                                              [13., 13.]], dtype=float32)
                              in n0}
                 pred_arg=v0
-                true_args=('n1',)
-                true_func={lambda v2.
-                            # v2: float[3,2]
+                true_func={lambda v2 v3 v5.
+                            # v2: float[3,2], v3: float[3,2], v5: float[3,2]
                             n0 = add v2 array([[3., 3.],
                                             [3., 3.],
                                             [3., 3.]], dtype=float32)
-                            in n0} ] 
-  in n3}
+                            n1 = add n0 v3
+                            in n1} ] 
+  in n2}
           """, str(mj.trace(func)(3., ones).pp()))
 
     self.assertAllClose(func_equiv(3., ones),
@@ -136,45 +133,40 @@ class TensorsTest(jtu.JaxTestCase):
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1 v2 v3.
   # v0: float, v1: float[3,2], v2: float, v3: float[3,2]
-  n0 = mul v1 array([[2., 2.],
-                  [2., 2.],
-                  [2., 2.]], dtype=float32)
-  n1 = mul n0 array([[4., 4.],
+  n0 = mul v1 array([[4., 4.],
                   [4., 4.],
                   [4., 4.]], dtype=float32)
-  n2 = mul v3 array([[2., 2.],
+  n1 = mul v1 array([[2., 2.],
                   [2., 2.],
                   [2., 2.]], dtype=float32)
-  n3 = mul n2 array([[4., 4.],
+  n2 = mul v3 array([[4., 4.],
                   [4., 4.],
                   [4., 4.]], dtype=float32)
-  n4 = mul v1 array([[14., 14.],
-                  [14., 14.],
-                  [14., 14.]], dtype=float32)
-  n5 = mul v3 array([[14., 14.],
-                  [14., 14.],
-                  [14., 14.]], dtype=float32)
-  n6 = cond_ge[ false_args=('n4', v1, 'n5', v3)
-                false_func={lambda v6 v7 v8 v9.
-                             # v6: float[3,2], v7: float[3,2], v8: float[3,2], v9: float[3,2]
-                             n0 = mul v7 array([[13., 13.],
+  n3 = mul v3 array([[2., 2.],
+                  [2., 2.],
+                  [2., 2.]], dtype=float32)
+  n4 = cond_ge[ args=('n0', 'n1', v1, 'n2', 'n3', v3)
+                false_func={lambda v10 v11 v12 v13 v14 v15.
+                             # v10: float[3,2], v11: float[3,2], v12: float[3,2], v13: float[3,2], v14: float[3,2], v15: float[3,2]
+                             n0 = mul v12 array([[13., 13.],
                                              [13., 13.],
                                              [13., 13.]], dtype=float32)
-                             n1 = mul v9 array([[13., 13.],
+                             n1 = mul v15 array([[13., 13.],
                                              [13., 13.],
                                              [13., 13.]], dtype=float32)
                              in (n0 n1,)}
                 pred_arg=v0
-                true_args=('n1', 'n3')
-                true_func={lambda v4 v5.
-                            # v4: float[3,2], v5: float[3,2]
+                true_func={lambda v4 v5 v6 v7 v8 v9.
+                            # v4: float[3,2], v5: float[3,2], v6: float[3,2], v7: float[3,2], v8: float[3,2], v9: float[3,2]
                             n0 = add v4 array([[3., 3.],
                                             [3., 3.],
                                             [3., 3.]], dtype=float32)
-                            in (n0 v5,)} ] 
-  n7 = proj[ idx=0 ] n6
-  n8 = proj[ idx=1 ] n6
-  in (n7 n8,)}
+                            n1 = add n0 v5
+                            n2 = add v7 v8
+                            in (n1 n2,)} ] 
+  n5 = proj[ idx=0 ] n4
+  n6 = proj[ idx=1 ] n4
+  in (n5 n6,)}
 """,
                                       str(mj.trace(mj.jvp(func))(*jvp_args_true).pp()))
     self.assertAllClose(func_jvp_equiv(*jvp_args_true),
@@ -189,21 +181,18 @@ class TensorsTest(jtu.JaxTestCase):
     self.assertMultiLineStrippedEqual("""
 {lambda v0 v1.
   # v0: float, v1: float[3,2]
-  n0 = mul v1 array([[2., 2.],
-                  [2., 2.],
-                  [2., 2.]], dtype=float32)
-  n1 = mul n0 array([[4., 4.],
+  n0 = mul v1 array([[4., 4.],
                   [4., 4.],
                   [4., 4.]], dtype=float32)
-  n2 = mul v1 array([[14., 14.],
-                  [14., 14.],
-                  [14., 14.]], dtype=float32)
-  n3 = cond_ge[ false_args=('n2', v1, array([[1., 1.],
-                                  [1., 1.],
-                                  [1., 1.]], dtype=float32))
-                false_func={lambda v4 v5 v6.
-                             # v4: float[3,2], v5: float[3,2], v6: float[3,2]
-                             n0 = mul v6 array([[13., 13.],
+  n1 = mul v1 array([[2., 2.],
+                  [2., 2.],
+                  [2., 2.]], dtype=float32)
+  n2 = cond_ge[ args=('n0', 'n1', v1, array([[1., 1.],
+                            [1., 1.],
+                            [1., 1.]], dtype=float32))
+                false_func={lambda v6 v7 v8 v9.
+                             # v6: float[3,2], v7: float[3,2], v8: float[3,2], v9: float[3,2]
+                             n0 = mul v9 array([[13., 13.],
                                              [13., 13.],
                                              [13., 13.]], dtype=float32)
                              in (array([[0., 0.],
@@ -212,31 +201,23 @@ class TensorsTest(jtu.JaxTestCase):
                                                                          [0., 0.],
                                                                          [0., 0.]], dtype=float32) n0,)}
                 pred_arg=v0
-                true_args=('n1', array([[1., 1.],
-                                 [1., 1.],
-                                 [1., 1.]], dtype=float32))
-                true_func={lambda v2 v3.
-                            # v2: float[3,2], v3: float[3,2]
-                            in (v3 array([[0., 0.],
-                                          [0., 0.],
-                                          [0., 0.]], dtype=float32) array([[0., 0.],
-                                                                           [0., 0.],
-                                                                           [0., 0.]], dtype=float32),)} ] 
-  n4 = proj[ idx=2 ] n3
-  n5 = proj[ idx=0 ] n3
-  n6 = mul n5 array([[4., 4.],
+                true_func={lambda v2 v3 v4 v5.
+                            # v2: float[3,2], v3: float[3,2], v4: float[3,2], v5: float[3,2]
+                            in (v5 v5 array([[0., 0.],
+                                             [0., 0.],
+                                             [0., 0.]], dtype=float32),)} ] 
+  n3 = proj[ idx=2 ] n2
+  n4 = proj[ idx=0 ] n2
+  n5 = mul n4 array([[4., 4.],
                   [4., 4.],
                   [4., 4.]], dtype=float32)
-  n7 = mul n6 array([[2., 2.],
+  n6 = add n3 n5
+  n7 = proj[ idx=1 ] n2
+  n8 = mul n7 array([[2., 2.],
                   [2., 2.],
                   [2., 2.]], dtype=float32)
-  n8 = add n4 n7
-  n9 = proj[ idx=1 ] n3
-  n10 = mul n9 array([[14., 14.],
-                   [14., 14.],
-                   [14., 14.]], dtype=float32)
-  n11 = add n8 n10
-  in (0.0 n11,)}
+  n9 = add n6 n8
+  in (0.0 n9,)}
 """,
                                       str(mj.trace(mj.grad(func))(3., ones).pp()))
     self.assertAllClose(func_grad_equiv(3., ones), mj.grad(func)(3., ones),

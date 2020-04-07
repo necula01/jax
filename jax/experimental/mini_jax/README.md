@@ -24,7 +24,8 @@ and optimizations have been simplified or omitted:
     have been applied.
   * A conditionals higher-order primitive.
   * The following composable transformations: JVP (forward differentiation),
-    GRAD (reverse differentiation), FLOPS (a new toy transformation to estimate
+    GRAD (reverse differentiation), 
+    FLOPS (a new toy transformation to estimate
     the FLOPS cost of the code, without
     actually running the computation, except as much as needed for when there
     are data-dependent FLOP counts.)   
@@ -50,9 +51,10 @@ and optimizations have been simplified or omitted:
     See below for a longer discussion of this difference between JAX and 
     mini-JAX.
   * Most higher-order primitives (`scan`, `while_loop`) are missing.  
-  * There is no support for PyTrees, only floats and tuples of floats can be returned.
+  * There is no support for PyTrees, only floats, tensors of floats, 
+    and tuples thereoff can be returned.
   * JIT in mini-JAX here means compiling to an executable Python string, no XLA.
-  * There is no VMAP or PMAP.
+  * There is no PMAP.
   * No support for custom transforms (overriding the transformation for various
     primitives).
   * no support for `static_argnums` (for JIT) and `argnums` (for GRAD), although
@@ -470,6 +472,40 @@ but perhaps for other computations we can follow strict data dependence
 and allow the optimizer to lift them as needed. Perhaps one can explore 
 such a mixed strategy in mini-JAX (and JAX), but for simplicity this is not
 yet done. 
+
+### Transformations and choice of primitives
+
+The choice is primitives (operators) depends on the choice of transformations
+to be supported: the existing operators must be sufficient to express the
+result of transforming all well-typed applications of the operators. 
+
+Consider the JVP operation, defined as follows, for an expression `e`
+depeinding on two variables `x1` and `x2`: 
+```
+   jvp(e)((x1, x2), (x1t, x2t)) = (de/dx1)(x1, x2) * x1t + (de/dx2)(x1, x2) * x2t  
+```   
+(We write `jvp(e)` for the transformed expression; 
+(de/dx) is the expression that denotes the derivative of `e` w.r.t. `x`.)
+
+It turns out that addition is closed under `jvp`, but multiplication is not, 
+in that it requires addition:
+```
+  jvp(e1 + e2)(x, xt) = jvp(e1)(x, xt), jvp(e2)(x, xt)
+  jvp(e1 * e2)(x, xt) = jvp(e1)(x, xt) * e2 + e1 * jvp(e2)(x, xt)
+```
+
+However, the union of addition and multiplication is closed under `jvp`.
+
+VJP is defined (simplistically) as follows:
+```
+  vjp(e)((x1, x2), yadj) = ((de/dx1)(x1, x2) * yadj, (de/dx2)(x1, x2) * yadj)
+```
+
+(`yadj` is the adjoint for the result of `e`)
+
+It turns out that addition and mutliplication are closed also under `vjp`. Adding
+a power operation (`e ** n`) to the set keeps it closed. Same for subtraction. 
+
 
 ### Ahead-of-time transformations through caching
 

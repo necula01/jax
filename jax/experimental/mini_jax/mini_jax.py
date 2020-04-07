@@ -24,11 +24,11 @@ import enum
 import itertools
 import numpy as np
 import typing
-from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
+from typing import cast, Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
 from jax.pprint_util import PrettyPrint, pp_kv_pairs
 from jax.experimental.mini_jax.mini_jax_util import (
-  map_tuple, map_list, unzip,
+  map_tuple, map_list, unzip, single_element,
   pp_str, pp_seq
 )
 
@@ -37,6 +37,7 @@ TB = typing.TypeVar('TB')
 
 Value = Union[Any, 'Tracer']  # Either a Python concrete value, or a Tracer
 Shape = Tuple[int, ...]
+
 
 class Globals(object):
   variable_id = itertools.count()  # Unique ids for variables
@@ -65,7 +66,7 @@ class ExprType(object):
       return v.expr.etype
     # Must be a constant
     if isinstance(v, int):
-      raise NotImplementedError("integer constants not yet implemented")
+      raise NotImplementedError("integer/boolean constants not yet implemented: {}".format(v))
     elif isinstance(v, float):
       return ExprType((), float)
     elif isinstance(v, np.ndarray):
@@ -154,6 +155,9 @@ class Expr(object):
                args: Sequence['Expr'],
                etype: Optional[ExprType] = None,
                **params):
+    """Some expressions denote tuples (e.g., JIT_CALL, COND_GE, some custom
+    operators, when having multiple_results). In that case `etype` is a
+    sequence of types"""
     self.operator = operator
     self.params = params
     self.args = args
@@ -393,7 +397,10 @@ class Tracer(object):
     self.env = env
     self.concrete = concrete
     # We export a shape attribute
-    self.shape = expr.etype.shape
+    if isinstance(expr.etype, (list, tuple)):
+      self.shape = tuple(map(lambda et: et.shape, expr.etype))
+    else:
+      self.shape = expr.etype.shape
 
   def __repr__(self):
     op = self.expr.operator  # Special-case some operators, simplifies debugging
@@ -507,7 +514,6 @@ class Tracer(object):
       res: a tracing value, that has a tuple `res.expr.etype`
     """
     if isinstance(res.expr.etype, (tuple, list)):
-      assert len(res.expr.etype) > 1
       res_tuple = map_tuple(
         lambda idx: Tracer.build(Operator.PROJECTION,
                                  dict(idx=idx), (res,),
@@ -668,8 +674,9 @@ class Function(object):
   def transform_function(
       self,
       transform_key: Any,
-      evaluator: Callable[..., Any],  # Takes a Function and a sequence of Tracer
-      extra_args_typ: Sequence[ExprType] = None
+      eval_function: Callable[..., Any],  # Takes a Function and a sequence of Tracer
+      transformed_args_types: Callable[[Sequence[ExprType]], Sequence[ExprType]] = None,
+      aux: Any = None
   ) -> 'Function':
     """Runs a traceable evaluator over a Function to produce transformed Function.
 
@@ -681,32 +688,47 @@ class Function(object):
     Args:
       transform_key: a hashable value to be used for caching the result
         of the transformation (by `self`).
-      evaluator: a Python traceable function, that given a `Function` and
+      eval_function: a Python traceable function, that given a `Function` and
         a set of Tracers evaluates the Function according to the transformed
-        semantics.
-      extra_args_typ: optional, the list of types of additional arguments for
-        the resulting function.
+        semantics. Returns a tuple of results, one for each result of the
+        function. If `aux`, then the tuple contains pair, with the result
+        and the auxiliary value for the result.
+      transformed_args_types: optional, a function that given the list of types
+        of the original arguments returns the list of types of the transformed
+        function arguments.
+      aux: (optional) If given then it is passed as keyword parameter `aux`
+        to `eval_function` and it is assumed that `eval_function` returns a pair
+        of a result Value and some auxiliary data.
 
     Returns:
-      a transformed Function.
+      a transformed Function, and optionally the auxiliary results (as a tuple)
     """
     result = Cache.get(self, transform_key)
-    if result is not None:
+    if aux is not None and result is not None:
       return result
 
     # Start with the current arg types
-    args_typ = [iv.etype for iv in self.invars]
-    if extra_args_typ is not None:
-      args_typ += extra_args_typ
+    args_typ = tuple([iv.etype for iv in self.invars])
+    if transformed_args_types is not None:
+      args_typ = tuple(transformed_args_types(args_typ))
     args_t = map_tuple(Tracer.new_var_tracer_from_type, args_typ)
-    res_t = evaluator(self, *args_t)
-    if not isinstance(res_t, tuple):
-      res_t = (res_t,)
+    if aux is not None:
+      res_t = eval_function(self, *args_t, aux=aux)
+      # Split out the auxiliary outputs
+      res_t, res_aux = unzip(res_t)
+    else:
+      res_t = eval_function(self, *args_t)
+      res_aux = None
+
     # res may contain literals, turn them into Tracer
     res_t = [Tracer.val_to_tracer(r) for r in res_t]
-    result = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
-    Cache.set(self, transform_key, result)
-    return result
+    result_func = Function([v_t.expr for v_t in args_t], [r_t.expr for r_t in res_t])
+    if aux:
+      # TODO(cache, with aux)
+      return result_func, res_aux  # type: ignore[return-value]
+    else:
+      Cache.set(self, transform_key, result_func)
+      return result_func
 
   def result_type(self):
     """The result type of the function.
@@ -844,14 +866,10 @@ def is_zero(v: Value) -> bool:
   return is_const(v, 0.)
 
 def val_to_shape(v: Value):
-  if isinstance(v, np.ndarray):
-    return v.shape
-  elif isinstance(v, float):
-    return ()
-  elif isinstance(v, Tracer):
+  if isinstance(v, Tracer):
     return v.expr.etype.shape
   else:
-    assert False
+    return np.shape(v)
 
 ############ TRACE ##############
 def trace(func: Callable, abstract: bool = True,

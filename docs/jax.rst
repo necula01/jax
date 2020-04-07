@@ -1,4 +1,4 @@
-.. currentmodule:: jax
+ß.. currentmodule:: jax
 
 Public API: jax package
 =======================

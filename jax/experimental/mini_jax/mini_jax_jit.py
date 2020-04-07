@@ -33,11 +33,11 @@ from __future__ import print_function
 import functools
 import numpy as np
 import os
-from typing import Dict, Callable, Tuple, Sequence, List
+from typing import cast, Any, Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value, Globals, Cache
+  Value, Globals, Cache,
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list, map_tuple, \
   pp_seq, pp_str
@@ -46,6 +46,10 @@ from jax.pprint_util import PrettyPrint
 
 class Jit(object):
   """Methods related to compilation."""
+  _global_exec_context: Dict[str, Any] = dict()  # Environment to be passed to "exec"
+  _global_exec_context["array"] = np.array
+  _global_exec_context["float32"] = np.float32
+  _global_exec_context["np"] = np
 
   @staticmethod
   def compile_expr_assigned(e: Expr, args_s: Sequence[str], name: str) -> PrettyPrint:
@@ -89,7 +93,7 @@ class Jit(object):
               pp_str("else:") +
               false_func_compiled.indent(2))
 
-    raise NotImplementedError
+    raise NotImplementedError(f"op is {e.operator}")
 
   @staticmethod
   def compile_simple_expr(e: Expr) -> str:
@@ -101,7 +105,7 @@ class Jit(object):
     elif e.operator == Operator.VAR:
       return str(e)
     else:
-      assert False
+      assert False, f"{e.operator}"
 
   @staticmethod
   def compile_function(func: Function) -> Tuple[str, PrettyPrint]:
@@ -157,7 +161,7 @@ class Jit(object):
     Args:
       func: the function to compile
       args_s: strings representing the arguments
-      res_s: string for where to put the result
+      res_name: string for where to put the result
 
     Returns: the PrettyPrinter for
       printing the function definition and the call.
@@ -172,7 +176,7 @@ class Jit(object):
     """Compile the function into a Python string that can be exec.
 
     Args:
-      args: actual Python values (no TracingVals)
+      args: actual Python values (no Tracers)
     """
     assert len(args) == len(func.invars)
     compiled = Jit.compile_function_call(func, map_tuple(str, func.invars),
@@ -181,7 +185,7 @@ class Jit(object):
     compiled_str = str(compiled)
     if os.getenv("MINI_JAX_LOG_COMPILES", 0):
       print("Running compiled function:\n" + compiled_str)
-    exec(compiled_str, {"array": np.array, "float32": np.float32}, fun_locals)
+    exec(compiled_str, Jit._global_exec_context, fun_locals)
     return fun_locals['_result']
 
 

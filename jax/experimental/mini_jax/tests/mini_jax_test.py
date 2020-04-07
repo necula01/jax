@@ -16,19 +16,41 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import math
+import re
+
 from jax import api
 from jax import lax
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
 from jax.experimental.mini_jax.mini_jax import Cache
+from jax.experimental.mini_jax.tests import mini_jax_testing_examples as testex
 
 from jax.config import config
+import numpy as np
+from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
 config.parse_flags_with_absl()
 FLAGS = config.FLAGS
 
-
 class MiniJaxTest(jtu.JaxTestCase):
+
+
+  def test_trace_all_examples(self):
+    """Trace all examples, to make sure they do not crash"""
+    for ex in testex.iterate_examples():
+      print(f"Tracing {ex.name}")
+      mj.trace(ex.func)(*ex.args)
+
+  def test_jit_all_examples(self):
+    """Trace all examples, to make sure they return the same value on jit"""
+    for ex in testex.iterate_examples():
+      #if ex.name != "SumDim0": continue  #TODO
+      print(f"JITing {ex.name}")
+      args = ex.args
+      res = ex.func(*args)
+      jit_res = mj.jit(ex.func)(*args)
+      self.assertAllClose(res, jit_res, check_dtypes=True)
 
   def test_trace_const_eval(self):
     """Constants are evaluated by Python."""
@@ -546,6 +568,40 @@ class MiniJaxTest(jtu.JaxTestCase):
     self.assertEqual(dict(hits=2, misses=1), Cache.get_info(func))
 
 
+#   def test_breakpoint_grad(self):
+#     """Try out debugging for grad."""
+#
+#     def identity(z):
+#       return z
+#
+#     def func(x, y):
+#       return x * mj.jit(identity)(x * y)
+#
+#     self.assertEqual(3. * (3. * 4.), func(3., 4.))
+#     self.assertEqual((2. * 3. * 4., 3. * 3.), mj.grad(func, abstract=False)(3., 4.))
+#     self.assertMultiLineStrippedEqual("""
+# {lambda v0 v1.
+#   # v0: float, v1: float
+#   n0 = jit_call[ func={lambda v2 v3.
+#                         # v2: float, v3: float
+#                         n0 = mul v2 v3
+#                         n1 = Op[myop] n0
+#                         n2 = mul 2.0 n0
+#                         n3 = mul n2 v2
+#                         n4 = mul n3 v3
+#                         n5 = add n1 n4
+#                         n6 = mul v2 n3
+#                         in (n5 n6,)} ] v0 v1
+#   n1 = proj[ idx=0 ] n0
+#   n2 = proj[ idx=1 ] n0
+#   in (n1 n2,)}
+#         """, str(mj.trace(mj.jit(mj.grad(func)))(3., 4.)))
+#     self.assertAllClose(((3. * 4.) ** 2 + 3. * 2. * 3. * 4. * 4.,
+#                          3. * 2. * 3. * 4. * 3.),
+#                         mj.jit(mj.grad(func))(3., 4.),
+#                         check_dtypes=True)
+
+
 class ComparativeJaxTest(jtu.JaxTestCase):
   """Tests using regular JAX, for comparison."""
 
@@ -592,6 +648,13 @@ class ComparativeJaxTest(jtu.JaxTestCase):
     print(api.make_jaxpr(api.jit(api.grad(func, argnums=(0, 1))))(3., 4.))
     print(api.make_jaxpr(api.grad(api.jit(func), argnums=(0, 1)))(3., 4.))
 
+  def test_grad_jit_swap_mj(self):
+    """Compare the result if we swap grad and jit."""
+    def func(x1, y1):
+      return x1 * y1
+
+    print(mj.trace(mj.jit(mj.grad(func)))(3., 4.))
+    print(mj.trace(mj.grad(mj.jit(func)))(3., 4.))
 
   def test_grad_concrete(self):
     """Gradient with concrete control-flow", and jit"""
@@ -630,6 +693,8 @@ class ComparativeJaxTest(jtu.JaxTestCase):
 
     self.assertAllClose(40., func(5.), check_dtypes=True)
     self.assertAllClose(-40., func(-5.), check_dtypes=True)
+
+
 
 
 

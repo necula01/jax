@@ -74,7 +74,7 @@ from typing import cast, Dict, Callable, List, Optional, Sequence, Tuple
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
   Value, const_like, zero_like, zero_like_shape,
-  Shape
+  Shape,
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -153,10 +153,7 @@ class Grad(object):
           adjoints[id(lvar)])
     # The unused vars get 0.
     res = [var_adjoints.get(v, zero_like_shape(v.etype.shape)) for v in func.invars]
-    if len(func.invars) == 1:
-      return res[0]  # type: ignore[return-value]
-    else:
-      return tuple(res)
+    return tuple(res)
 
 
   def add_subexpr_adjoints(self, e: Expr,
@@ -189,19 +186,19 @@ class Grad(object):
       add_adjoint(e.args[1], eval_std_expr(e.args[0]) * out_adj)
     elif e.operator == Operator.POW:
       pow = e.params['pow']
-      if pow == 1:
-        add_adjoint(e.args[0], out_adj)
-      elif pow != 0:
-        add_adjoint(e.args[0],
-                    out_adj * const_like(float(pow), out_adj) * eval_std_expr(e.args[0]) ** (
-                          pow - 1))
+      assert pow > 1  # We catch special cases in the Tracer.__pow__
+      add_adjoint(e.args[0],
+                  out_adj * const_like(float(pow), out_adj) * eval_std_expr(e.args[0]) ** (
+                       pow - 1))
     elif e.operator == Operator.PROJECTION:
       # We need to reach into the adjoints and increment only one element
       old_adj = adjoints.get(id(e.args[0]))
       if old_adj is None:
-        old_adj = [zero_like_shape(et.shape) for et in e.args[0].etype]  # type: ignore
-        adjoints[id(e.args[0])] = old_adj
-      old_adj[e.params["idx"]] += out_adj  # type: ignore
+        old_adj_list = [zero_like_shape(et.shape) for et in e.args[0].etype]  # type: ignore[attr-defined]
+      else:
+        old_adj_list = list(old_adj)  # type: ignore[arg-type]
+      old_adj_list[e.params["idx"]] += out_adj
+      adjoints[id(e.args[0])] = tuple(old_adj_list)
 
     elif e.operator == Operator.JIT_CALL:
       """See comments at top of file."""
@@ -209,7 +206,7 @@ class Grad(object):
       vjp_func = self.transform_function(func)
       if not isinstance(out_adj, (tuple, list)):
         out_adj = [out_adj]
-      args_v = map_list(eval_std_expr, e.args) + out_adj  # type: ignore
+      args_v = map_list(eval_std_expr, e.args) + list(out_adj)  # type: ignore
       arg_adj = Expr.eval_std_operator(Operator.JIT_CALL,
                                        dict(func=vjp_func),
                                        args_v)
@@ -225,7 +222,7 @@ class Grad(object):
       false_func_vjp = self.transform_function(false_func_f)
 
       if isinstance(out_adj, (tuple, list)):
-        out_adj_list = cast(List[Value], out_adj)
+        out_adj_list = list(out_adj)
       else:
         out_adj_list = [out_adj]
       assert len(out_adj_list) == len(true_func_f.results) == len(false_func_f.results)
@@ -241,6 +238,7 @@ class Grad(object):
       add_adjoint(e.args[0], 0.)  # The predicate argument is a scalar
       for a, a_adj in zip(e.args[1:], args_adj_list):
         add_adjoint(a, a_adj)
+
     else:
       raise NotImplementedError
 
@@ -256,7 +254,7 @@ class Grad(object):
     return func.transform_function(
       "vjp",
       self.eval_function,
-      extra_args_typ=[result.etype for result in func.results])
+      transformed_args_types=lambda func_args_typ: tuple([*func_args_typ, *[result.etype for result in func.results]]))
 
 
 def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
@@ -282,8 +280,6 @@ def grad(func: Callable, abstract: bool = True, cache: bool = True) -> Callable[
       func_f, *args, *func_f_env,
       const_like(1., None, shape=func_f.results[0].etype.shape))
 
-    if not isinstance(res_grad, tuple):
-      res_grad = (res_grad,)
     # Drop adjoints for the freevars
     res_grad = res_grad[0:len(args)]
     if len(args) == 1:

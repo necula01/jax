@@ -37,6 +37,9 @@ def unzip(lst):
     res2.append(e[1])
   return res1, res2
 
+def single_element(tup: Sequence) -> Any:
+  assert isinstance(tup, Sequence) and len(tup) == 1
+  return tup[0]
 
 def pp_str(s: str) -> PrettyPrint: return ppu.pp(s)
 

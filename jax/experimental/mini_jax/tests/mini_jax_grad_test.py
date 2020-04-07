@@ -16,12 +16,87 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import itertools
 
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
+from jax.experimental.mini_jax.tests import mini_jax_testing_examples as testex
+from jax.experimental.mini_jax.mini_jax import (
+  const_like, zero_like_shape
+)
+import numpy as np
+from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
+
+class NotImplementedTensorResult(Exception):
+  pass
 
 class GradTest(jtu.JaxTestCase):
+
+  def helperTestGrad(self, func: Callable,
+                     args: Tuple,
+                     expected_trace: Optional[str] = None):
+    """Test the GRAD of the function, numerically.
+
+    Args:
+      func: a function to grad
+      args: a tuple of arguments
+      expected_trace: the expected trace string for the JVP function
+    """
+    res0 = orig_res0 = func(*args)
+    if isinstance(res0, tuple) or np.shape(res0):
+      # Build another function that just sums up the results
+      orig_func = func
+      def scalar_func(*args):
+        res0 = orig_func(*args)
+        if not isinstance(res0, tuple):
+          res0 = (res0,)
+        shapes = set({np.shape(r) for r in res0})
+        assert len(shapes) == 1, f"Function returns multiple results of multiple shapes {shapes}"
+        shape, = shapes
+        sum_res = zero_like_shape(shape)
+        for r in res0:
+          sum_res += r
+        if np.shape(sum_res):
+          raise NotImplementedTensorResult()
+        return sum_res
+      func = scalar_func
+      res0 = func(*args)
+    assert not isinstance(res0, tuple)  # GRAD only works for single-result functions
+
+    grad_tr = mj.trace(mj.grad(func))(*args)
+    if expected_trace is not None:
+      self.assertMultiLineStrippedEqual(expected_trace, str(grad_tr.pp()))
+    assert len(args) == len(grad_tr.results)
+
+    numeric_grad = []  # One for each argument
+    EPS = 0.001
+    for i, a in enumerate(args):
+      # Perturb one arg; we must perturb each element of the tensor
+      # A sequence of all indices of all cells in args[i]
+      ai_shape = np.shape(args[i])
+      assert not ai_shape
+      
+      eps_args = args[0:i] + (args[i] + EPS,) + args[i + 1:]
+      eps_res = func(*eps_args)
+      numeric_grad.append((eps_res - res0) / EPS)
+    if len(numeric_grad) == 1:
+      numeric_grad = numeric_grad[0]
+    else:
+      numeric_grad = tuple(numeric_grad)  # type: ignore[assignment]
+    grad_res = mj.grad(func)(*args)
+    self.assertAllClose(numeric_grad, grad_res, check_dtypes=True,
+                        rtol=1e-2)
+
+  def test_grad_all_examples(self):
+    """Test GRAD for all examples, numerically."""
+    for ex in testex.iterate_examples():
+      #if ex.name != "SumDim0": continue
+      print(f"GRAD f or {ex.name}")
+      try:
+        self.helperTestGrad(ex.func, ex.args)
+      except NotImplementedTensorResult:
+        print(f"  skip due to tensor result")
 
   def test_grad_simple(self):
     def func(x, y):
@@ -375,3 +450,4 @@ class GradTest(jtu.JaxTestCase):
 
     self.assertEqual(2., mj.grad(func, abstract=False)(3.))
     self.assertEqual(2. * 3., mj.grad(func, abstract=False)(-3.))
+

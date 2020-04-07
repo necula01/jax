@@ -44,7 +44,7 @@ from typing import Dict, Callable, Tuple, Sequence, List
 
 from jax.experimental.mini_jax.mini_jax import (
   Expr, ExprType, Operator, Function, Tracer,
-  Value
+  Value,
 )
 from jax.experimental.mini_jax.mini_jax_util import map_list
 
@@ -55,6 +55,14 @@ class Flops(object):
   """Methods related to counting flops."""
 
   def eval_function(self, func: Function, *args_v: Value) -> Value:
+    """Evaluates the FLOPS given Values for invars.
+
+    Args:
+      func: the function whose FLOPS to evaluate
+      args_v: the primal values of the arguments
+    Returns:
+       a tuple of all the results.
+    """
     # Prepare an expression evaluator for when flops are data-dependent
     eval_std_expr = func.make_evaluator(args_v,
                                         eval_operator=Expr.eval_std_operator)
@@ -68,9 +76,9 @@ class Flops(object):
                   eval_std_expr=eval_std_expr,
                   accum_flops=accum_flops)
     _ = [eval_flops_expr(result) for result in func.results]
-    return accum_flops[0]
+    return (accum_flops[0],)
 
-  def eval_expr(self, e: Expr, args_v: Sequence[FlopsVal],
+  def eval_expr(self, e: Expr, _: Sequence[FlopsVal],
                 eval_std_expr: Callable[[Expr], Value],
                 accum_flops: List[FlopsVal]) -> FlopsVal:
     """Computes the flops, excluding the flops of the arguments.
@@ -78,7 +86,7 @@ class Flops(object):
     Will be called one per distinct Expr object.
     Args:
       e: the expression whose flops cost to calculate.
-      eval_expr: in the cases when the flops are data-dependent, an expression
+      eval_std_expr: in the cases when the flops are data-dependent, an expression
         evaluator.
     Returns:
       cost of flops, not including the flops of `e.args`.
@@ -128,7 +136,8 @@ class Flops(object):
                false_func=false_func_flops),
           map_list(eval_std_expr, e.args))
         return accum(1. + res_cond)
-    assert False
+
+    raise NotImplementedError(f"op is {e.operator}")
 
 def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Callable:
   """Wrap a function into a flops counter.
@@ -145,11 +154,11 @@ def count_flops(func: Callable, abstract: bool = True, cache: bool = True) -> Ca
     flops performed.
   """
 
-  def do_flops(*args: Value):
+  def do_count_flops(*args: Value):
     func_f, func_f_env = Function.trace_user_function(func, args,
                                                       abstract=abstract,
                                                       cache=cache)
     res_flops = Flops().eval_function(func_f, *args, *func_f_env)
-    return res_flops
+    return res_flops[0]  # type: ignore[index]
 
-  return do_flops
+  return do_count_flops

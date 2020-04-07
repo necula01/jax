@@ -19,12 +19,20 @@ from __future__ import print_function
 
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
+from jax.experimental.mini_jax.tests import mini_jax_testing_examples as testex
 
 from jax.config import config
 config.parse_flags_with_absl()
 FLAGS = config.FLAGS
 
+
 class FlopsTest(jtu.JaxTestCase):
+
+  def test_flops_all_examples(self):
+    """Trace all examples, to make sure they do not crash"""
+    for ex in testex.iterate_examples():
+      print(f"Computing FLOPS for {ex.name}")
+      mj.count_flops(ex.func)(*ex.args)
 
   def test_flops_simple(self):
     def func(x):

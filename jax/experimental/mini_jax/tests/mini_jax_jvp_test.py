@@ -20,13 +20,61 @@ from __future__ import print_function
 from jax import test_util as jtu
 from jax.experimental import mini_jax as mj
 from jax.config import config
+from jax.experimental.mini_jax.mini_jax import (
+  const_like
+)
+from jax.experimental.mini_jax.tests import mini_jax_testing_examples as testex
 
 import numpy as np
+from typing import Any, Dict, Callable, Tuple, Sequence, List, Optional, Union
 
 config.parse_flags_with_absl()
 FLAGS = config.FLAGS
 
+
+
 class JvpTest(jtu.JaxTestCase):
+
+  def helperTestJvp(self, func: Callable,
+                    args: Sequence,
+                    args_tan: Sequence,
+                    expected_trace: Optional[str] = None):
+    """Test the JVP of the function, numerically.
+
+    Args:
+      func: a function to vmap
+      args: a tuple of arguments
+      expected_trace: the expected trace string for the JVP function
+    """
+    assert len(args) == len(args_tan)
+    jvp_tr = mj.trace(mj.jvp(func))(*args, *args_tan)
+    if expected_trace is not None:
+      self.assertMultiLineStrippedEqual(expected_trace, str(jvp_tr.pp()))
+    res0 = func(*args)
+    args1 = tuple([a + a_tan for a, a_tan in zip(args, args_tan)])
+    res1 = func(*args1)
+    res_and_tan = mj.jvp(func)(*args, *args_tan)
+    assert isinstance(res_and_tan, tuple)
+    if isinstance(res0, tuple):
+      assert isinstance(res0, tuple) and isinstance(res1, tuple)
+      assert len(res_and_tan) == 2 * len(res0)
+      # We repack them as primals followed by tangents
+      numeric_res_and_tan = tuple([*res0, *[r1 - r0 for r0, r1 in zip(res0, res1)]])
+    else:
+      assert not isinstance(res1, tuple)
+      assert len(res_and_tan) == 2
+      numeric_res_and_tan = tuple([res0, res1 - res0])
+
+    self.assertAllClose(numeric_res_and_tan, res_and_tan, check_dtypes=True,
+                        rtol=1e-2)
+
+  def test_jvp_all_examples(self):
+    """Test JVP for all examples, numerically."""
+    for ex in testex.iterate_examples():
+      #if ex.name != "Arithmetic_tensor": continue
+      print(f"JVP for {ex.name}")
+      args_tan = tuple([const_like(0.001 * (i + 1), a) for i, a in enumerate(ex.args)])
+      self.helperTestJvp(ex.func, ex.args, args_tan)
 
   def test_jvp_simple(self):
     def func(x):
