@@ -16,7 +16,7 @@
 import operator
 from operator import attrgetter
 from contextlib import contextmanager
-from collections import namedtuple
+from collections import Counter, namedtuple
 from functools import total_ordering
 import itertools as it
 from weakref import ref
@@ -46,6 +46,40 @@ traceback_util.register_exclusion(__file__)
 
 zip = safe_zip
 map = safe_map
+
+
+# Experimental stats collecter for primitive usage
+import atexit
+class StatsDb:
+  def __init__(self):
+    self.stats = Counter()
+    self.used = False
+
+  def collect(self, primitive: str, kwargs: Dict):
+    data = None
+    if primitive == "pad":
+        negative = False
+        dilation = False
+        for b, m, a in kwargs["padding_config"]:
+          if b < 0 or m < 0 or a < 0:
+            negative = True
+          if m > 0:
+            dilation = True
+        data = dict(negative=negative, dilation=dilation)
+    if data is not None:
+      self.emit(primitive, data)
+
+  def emit(self, primitive, params):
+    if not self.used:
+      atexit.register(self.dump)
+      self.used = True
+    data = primitive, *sorted(tuple(params.items()))
+    self.stats[data] += 1
+
+  def dump(self):
+    x = 5
+
+_stats_db = StatsDb()
 
 
 # -------------------- jaxprs --------------------
@@ -254,8 +288,10 @@ class Primitive:
   def __repr__(self):
     return '{}'.format(self.name)
 
-
   def bind(self, *args, **params):
+    stats_db = _stats_db
+    if stats_db:
+      stats_db.collect(self.name, params)
     assert (not config.jax_enable_checks or
             all(isinstance(arg, Tracer) or valid_jaxtype(arg) for arg in args)), args
     top_trace = find_top_trace(
