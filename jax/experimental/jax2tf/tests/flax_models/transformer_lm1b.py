@@ -93,12 +93,12 @@ def sinusoidal_init(max_len=2048,
     """Sinusoidal init."""
     del key, dtype
     d_feature = shape[-1]
-    pe = np.zeros((max_len, d_feature), dtype=np.float32)
-    position = np.arange(0, max_len)[:, np.newaxis]
+    pe = jnp.zeros((max_len, d_feature), dtype=np.float32)
+    position = jnp.arange(0, max_len)[:, np.newaxis]
     scale_factor = -np.log(max_scale / min_scale) / (d_feature // 2 - 1)
-    div_term = min_scale * np.exp(np.arange(0, d_feature // 2) * scale_factor)
-    pe[:, :d_feature // 2] = np.sin(position * div_term)
-    pe[:, d_feature // 2: 2 * (d_feature // 2)] = np.cos(position * div_term)
+    div_term = min_scale * jnp.exp(jnp.arange(0, d_feature // 2) * scale_factor)
+    pe = pe.at[:, :d_feature // 2].set(jnp.sin(position * div_term))
+    pe = pe.at[:, d_feature // 2: 2 * (d_feature // 2)].set(jnp.cos(position * div_term))
     pe = pe[np.newaxis, :, :]  # [1, max_len, d_feature]
     return jnp.array(pe)
 
