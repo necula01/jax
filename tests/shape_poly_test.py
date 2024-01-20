@@ -72,8 +72,12 @@ expect_error_associative_scan = (
 # yet as tight as we want. We will write the expected values as
 #  _expect(best=..., current=...) and we use the `current` value in the
 # test, but we aspire to a decision procedure where we could compute `best`.
-def _expect(*, current, best):
-  return current
+_USE_SIMPLEX = shape_poly_decision._USE_SIMPLEX
+def _expect(*, current, best, simplex=None):
+  if _USE_SIMPLEX.value:
+    return simplex if simplex is not None else current
+  else:
+    return current
 
 def _bounds(e: shape_poly.DimSize) -> tuple[float, float]:
   return shape_poly._bounds_decision(e, shape_poly.BoundsPrecision.BEST)
@@ -516,15 +520,15 @@ class DimExprTest(jtu.JaxTestCase):
     self.assertEqual(_bounds(core.max_dim(a, b) - b), (0, np.inf))
     self.assertEqual((0, 0), _bounds(core.max_dim(1 - b, 0)))
     self.assertEqual(_bounds(core.max_dim(a, b) - a - core.max_dim(b - a, 0)),
-                     _expect(best=(0, 0), current=(0, np.inf)))
+                     _expect(best=(0, 0), current=(0, np.inf), simplex=(0, 0)))
     self.assertEqual(_bounds(core.max_dim(a, b) + core.max_dim(c, d) -
                              core.max_dim(a + core.max_dim(c, d),
                                           b + core.max_dim(c, d))),
-                     _expect(best=(0, 0), current=(0, np.inf)))
+                     _expect(best=(0, 0), current=(0, np.inf), simplex=(0, 0)))
     self.assertEqual(_bounds(core.max_dim(a, b) + core.min_dim(c, d) -
                              core.max_dim(a + core.min_dim(c, d),
                                           b + core.min_dim(c, d))),
-                     _expect(best=(0, 0), current=(0, np.inf)))
+                     _expect(best=(0, 0), current=(0, np.inf), simplex=(0, 0)))
 
     self.sampled_assertion(core.max_dim(a, 5), core.max_dim, a, 5)
     self.sampled_assertion(core.max_dim(5, a), core.max_dim, 5, a)
@@ -727,6 +731,8 @@ class DimExprTest(jtu.JaxTestCase):
            "b <= 5",
            "c + 3*d >= 10", "c - 2*d >= -4",  # -> 5c >= 8 -> c >= 2
         ])
+    if shape_poly_decision._USE_SIMPLEX.value:
+      self.skipTest("Not applicable for Simplex")
     scope = a.scope
     def _m(e: shape_poly._DimExpr) -> shape_poly._DimTerm:
       return e._to_term()
@@ -879,7 +885,8 @@ class DimExprTest(jtu.JaxTestCase):
     self.assertEqual(_bounds(a - 2*d), (3, np.inf))  # a - 2d = m + 2d >= 3
     # TODO: The incompleteness is due to the way we combine external constraints
     self.assertEqual(_bounds(a),
-                     _expect(best=(5, np.inf), current=(4, np.inf)))  # a >= 4d + m >= 5
+                     _expect(best=(5, np.inf), simplex=(5, np.inf),
+                             current=(4, np.inf)))  # a >= 4d + m >= 5
 
   def test_constraints_errors(self):
     with self.assertRaisesRegex(ValueError,
@@ -940,7 +947,8 @@ class DimExprTest(jtu.JaxTestCase):
   def test_constraints_ge_fractional(self):
     a, = shape_poly.symbolic_shape("a",
                                    constraints=("2 * a >=  5", "3 * a <= 10",))
-    self.assertEqual(_bounds(5*a - 2), (13, 13))
+    self.assertEqual(_bounds(5*a - 2),
+                     _expect(best=(13, 13), current=(13, 13), simplex=(11, 14)))
 
   @jtu.parameterized_filterable(
       kwargs=[
@@ -949,7 +957,7 @@ class DimExprTest(jtu.JaxTestCase):
           dict(constraint="-2*a + 3*b >= 10", exp="a + 2*b",
                bounds=(9, np.inf)),
           dict(constraint="-2*a + -3*b >= -10", exp="-1*a + 2*b",
-               bounds=(-1, 3)),
+               bounds=_expect(best=(-1, 3), current=(-1, 3), simplex=(-1, 4))),
           dict(constraint="2*a + -3*b >= 10", exp="-1*a + 2*b", bounds=(-np.inf, np.inf)),
       ]
   )
@@ -3686,6 +3694,291 @@ class ShapePolyHarnessesTest(jtu.JaxTestCase):
     with jtu.global_config_context(**config_flags):
       harness.run_test(self)
 
+
+
+class SimplexTest(jtu.JaxTestCase):
+
+  def setUp(self):
+    prev_use_simplex = shape_poly._USE_SIMPLEX.value
+    config.update("jax_shape_polymorphism_use_simplex", True)
+    self.addCleanup(lambda: config.update("jax_shape_polymorphism_use_simplex",
+                                          prev_use_simplex))
+    super().setUp()
+
+  def _bounds(self, estr: str, assumptions: Sequence[str] = ()) -> tuple[float, float]:
+    scope = shape_poly.SymbolicScope(assumptions)
+    decision = shape_poly._DecisionState(scope)
+    e, = shape_poly.symbolic_shape(estr, scope=scope)
+    e_lb, e_ub = decision.bounds(e)
+    return e_lb, e_ub
+
+
+class SimplexInternalTest(jtu.JaxTestCase):
+
+  def _parse_state_pp(self, s: str) -> shape_poly.Simplex:
+    # Parse the Legend
+    scope = shape_poly.SymbolicScope()
+    simplex = shape_poly_decision._Simplex(scope)
+    header = re.search(r"^\s+\|(.+)\n", s)  # starts with spaces then |
+    assert header
+    col_owners = [h.strip().split(":")[1].strip()
+                  for h in header.group(1).split("|")]
+    assert "1" == col_owners[0]
+    rows = [[x.strip() for x in r.split("|")]
+            for r in s.split("\n") if re.match(r"^\s+\d+:", r)]  # row starts with number
+    row_owners = [r[0].split(":")[1].strip() for r in rows]
+    if rows:
+      parsed_tableau = np.array([[0. if not c else float(c) for c in row[1:]]
+                                for row in rows], dtype=np.float32)
+    else:
+      parsed_tableau = np.zeros((0, len(col_owners)), dtype=np.float32)
+    assert s.find("Legend:") > 0
+    solution_idx = s.find("Sample solution")
+    legend_str = s[s.find("Legend:"):solution_idx] + "\n"
+    # A legend row: spaces owner_name(+?)  = expr  (# comment)?
+    legend_re = r"\s*(\w+\s*\+?)\s*=\s*([\w\s\-\+\*\(\),]+)\s*(#[^\n]*)?\n"
+    legend_dict: dict[str, shape_poly._DimExpr] = {}
+    for own, own_expr, own_msg in re.findall(legend_re, legend_str, re.DOTALL):
+      owner = own.strip()
+      self.assertNotIn(owner, legend_dict)
+      if not owner.startswith("_"):
+        raise ValueError(
+            f"Owner {owner} appears in the Legend, yet its name does not start "
+            "with '_' so it means it is a variable")
+      legend_dict[owner] = shape_poly.symbolic_shape(own_expr, scope=scope)[0]
+
+    def make_var(owner: str, row = None, col = None) -> shape_poly.Simplex.Var:
+      own_name, restricted = re.match(r"^(\w+)\s*(\+?)$", owner).groups()
+      own_expr = legend_dict.get(own)
+      if own_expr is None:  # It must be a variable
+        if own.startswith("_"):
+          raise ValueError(
+              f"Owner {owner} does not appear in the Legend yet its name starts "
+              "with '_' so it is not a variable")
+        own_expr = shape_poly._DimExpr._from_var(own_name, scope)
+      v = shape_poly_decision._Simplex.Var(
+          info=shape_poly_decision._Simplex.AssumeInfo(
+              shape_poly_decision._Simplex.AssumeType.IMPLICIT),
+                  expr=own_expr,
+                  short_name=own_name,
+                  row=row, col=col)
+      if restricted:
+        v.restricted = True
+      return v
+
+    for c, own in enumerate(col_owners):
+      if c == 0:
+        assert own == "1"
+        continue
+      simplex.col_owner.append(make_var(own, col=c))
+    for r, own in enumerate(row_owners):
+      simplex.row_owner.append(make_var(own, row=r))
+
+    simplex.expand_tableau(rows=parsed_tableau.shape[0], cols=parsed_tableau.shape[1])
+    simplex.nr_rows = parsed_tableau.shape[0]
+    simplex.nr_cols = parsed_tableau.shape[1]
+    simplex.tableau[:simplex.nr_rows, :simplex.nr_cols] = parsed_tableau
+    denominator = re.search(r"Denominator\s+=\s+(\d+)", s, re.DOTALL)
+    simplex.denominator = 1 if denominator is None else int(denominator.group(1))
+    simplex.check_invariant_if_enabled()
+    return simplex
+
+  def check_pivot(
+      self, state_pp: str, *,
+      goal_r: int, direction: int,
+      best: tuple[int, int, float]):
+    simplex = self._parse_state_pp(state_pp)
+    self.assertEqual(best,
+                     simplex.find_best_pivot(goal_r=goal_r, direction=direction,
+                                             only_in_column=None))
+    p_row, p_col, best_increase = best
+    self.assertGreaterEqual(best_increase, 0)
+    if best_increase == np.inf:
+      pass  # self.assertEqual(-1, p_row)
+    elif p_row == -1 and p_col == -1:
+      pass
+    else:
+      prev_goal_sample = simplex.tableau[goal_r, 0]
+      if p_row == goal_r:
+        self.assertEqual(direction, -1)
+        self.assertTrue(simplex.row_owner[goal_r].restricted)
+        self.assertEqual(best_increase, prev_goal_sample)
+        # Pivoting should work
+        simplex.pivot(p_row, p_col)
+      else:
+        simplex.pivot(p_row, p_col)
+        self.assertAllClose(prev_goal_sample + direction * best_increase,
+                            simplex.tableau[goal_r, 0])
+
+  def test_pivot_1(self):
+    state = """
+         |  0:1     |  1:a
+---------|----------|---------
+ 0:_sa0  |   -1.000 |    1.000
+---------|----------|---------
+
+Denominator = 1
+Legend:
+_sa0     = a - 1
+"""
+    # row 0
+    self.check_pivot(state, goal_r=0, direction=1, best=(0, 1, np.inf))
+    self.check_pivot(state, goal_r=0, direction=-1, best=(None, 1, np.inf))
+
+  def test_pivot_2(self):
+    state = """
+         |  0:1     |  1:_e1+
+---------|----------|---------
+ 0:a     |    2.500 |    0.500
+ 1:_sa0+ |    1.500 |    0.500
+ 2:_e2+  |    2.500 |   -1.500
+ 3:_g3   |   10.500 |    2.500
+---------|----------|---------
+
+Denominator = 2
+Legend:
+_sa0+    = a - 1
+_e2+     = -3*a + 10
+_g3      = 5*a - 2  # goal
+_e1+     = 2*a - 5
+"""
+    # row 0
+    self.check_pivot(state, goal_r=0, direction=1, best=(2, 1, 5./6.))
+    self.check_pivot(state, goal_r=0, direction=-1, best=(-1, -1, 0.))
+    # row 1
+    self.check_pivot(state, goal_r=1, direction=1, best=(2, 1, 5./6.))
+    self.check_pivot(state, goal_r=1, direction=-1, best=(-1, -1, 0))
+    # row 2
+    self.check_pivot(state, goal_r=2, direction=1, best=(-1, -1, 0.))
+    self.check_pivot(state, goal_r=2, direction=-1, best=(2, 1, 2.5))
+    # row 3
+    self.check_pivot(state, goal_r=3, direction=1, best=(2, 1, 25./6.))
+    self.check_pivot(state, goal_r=3, direction=-1, best=(-1, -1, 0.))
+
+  def test_pivot_3(self):
+    # This tests finding the most restrictive row for pivoting. It also has
+    # a sample value of 0 for a restricted row.
+    state = """
+         |  0:1     |  1:_e0
+---------|----------|---------
+ 0:_e1+  |    4.000 |    1.000
+ 1:_e2+  |          |   -1.000
+ 2:_g3   |   -5.000 |   -1.000
+---------|----------|---------
+
+Denominator = 1
+Legend:
+_e1+     = mod(a, -5) + 4  # mod(a, -5) >= -4
+_e2+     = -1*mod(a, -5)  # 0 >= mod(a, -5)
+_g3      = -1*mod(a, -5) - 5  # goal
+_e0      = mod(a, -5)
+"""
+    # row 0
+    self.check_pivot(state, goal_r=0, direction=1, best=(1, 1, 0.))
+    self.check_pivot(state, goal_r=0, direction=-1, best=(0, 1, 4.))
+    # row 1
+    self.check_pivot(state, goal_r=1, direction=1, best=(0, 1, 4.))
+    self.check_pivot(state, goal_r=1, direction=-1, best=(1, 1, 0.))
+    # row 2
+    self.check_pivot(state, goal_r=2, direction=1, best=(0, 1, 4.))
+    self.check_pivot(state, goal_r=2, direction=-1, best=(1, 1, 0.))
+
+  def test_pivot_4(self):
+    state = """
+         |  0:1     |  1:_e2+  |  2:_sa+  |  3:_sd+  |  4:v  |  5:w
+---------|----------|----------|----------|-------------------------
+ 0:b     |    8.000 |    1.000 |   -2.000 |          |       |
+ 1:a     |    1.000 |          |    1.000 |          |       |
+ 2:_sb+  |    7.000 |    1.000 |   -2.000 |          |       |
+ 3:d     |    1.000 |          |          |    1.000 |       |
+ 4:_g4   |   -3.000 |          |    1.    |   -4.    |  2.0  |
+ 5:_z+   |          |   -1.    |          |          |       |
+ 6:_sw+  |    3.    |          |          |          |       |  -1.
+ 7:_g7+  |    5.    |   1.     |    2.    |          |       |   1.
+---------|----------|----------|----------|----------|------------
+
+Denominator = 1
+Legend:
+_sb+    = b - 1
+_e2+    = b + 2*a - 10
+_sa+    = a - 1
+_sd+    = d - 1
+_g4     = -4*d + a  + 2*v
+_z+     = -1*b - 2*a + 10
+_z2+    = 0
+_sw+    = 3 - w
+_g7+    = b + 4*a - 7 + w
+"""
+
+    # row 0
+    self.check_pivot(state, goal_r=0, direction=1, best=(5, 1, 0.))
+    self.check_pivot(state, goal_r=0, direction=-1, best=(2, 2, 7.))
+    # row 1
+    self.check_pivot(state, goal_r=1, direction=1, best=(2, 2, 3.5))
+    self.check_pivot(state, goal_r=1, direction=-1, best=(-1, -1, 0.))
+    # row 2
+    self.check_pivot(state, goal_r=2, direction=1, best=(5, 1, 0.))
+    self.check_pivot(state, goal_r=2, direction=-1, best=(2, 2, 7.))
+    # row 3
+    self.check_pivot(state, goal_r=3, direction=1, best=(None, 3, np.inf))
+    self.check_pivot(state, goal_r=3, direction=-1, best=(-1, -1, 0.))
+    # row 4
+    self.check_pivot(state, goal_r=4, direction=1, best=(4, 4, np.inf))
+    self.check_pivot(state, goal_r=4, direction=-1, best=(None, 3, np.inf))
+    # row 5
+    self.check_pivot(state, goal_r=5, direction=1, best=(-1, -1, 0.))
+    self.check_pivot(state, goal_r=5, direction=-1, best=(5, 1, 0.))
+    # row 6
+    self.check_pivot(state, goal_r=6, direction=1, best=(7, 5, 5.))
+    self.check_pivot(state, goal_r=6, direction=-1, best=(6, 5, 3.))
+    # row 7
+    self.check_pivot(state, goal_r=7, direction=1, best=(2, 2, 7.))
+    self.check_pivot(state, goal_r=7, direction=-1, best=(7, 5, 5.))
+
+  def test_pivot_even_when_0(self):
+    # The first pivot does not improve the goal, but then it does, and at
+    # the end the goal ends up in a restricted column.
+    state = """
+         |  0:1     |  1:_e1+  |  2:_sa+
+---------|----------|----------|---------
+ 0:_e0+  |   14.000 |   -1.000 |
+ 1:_e2   |    1.000 |          |    1.000
+ 2:_e3+  |          |   -1.000 |    1.000
+---------|----------|----------|---------
+
+Denominator = 1
+Legend:
+_e0+     = max(-1*a + 15, 0)
+_e2      = a
+_e3+     = max(-1*a + 15, 0) + a - 15  # max(-1*a + 15, 0) >= -1*a + 15
+_e1+     = -1*max(-1*a + 15, 0) + 14  # 14 >= max(-1*a + 15, 0)
+_sa+     = a - 1  # a >= 1
+    """
+    self.check_pivot(state, goal_r=0, direction=1, best=(-1, -1, 0.))
+    self.check_pivot(state, goal_r=0, direction=-1, best=(2, 1, 0.))
+
+    simplex = self._parse_state_pp(state)
+    self.assertEqual(0.,
+                     simplex.improve_var(simplex.row_owner[0],
+                                         direction=-1))
+  def test_improve_no_rows(self):
+    # The first pivot does not improve the goal, but then it does, and at
+    # the end the goal ends up in a restricted column.
+    state = """
+         |  0:1     |  1:a+    |  2:b+
+---------|----------|----------|---------
+---------|----------|----------|---------
+
+Denominator = 1
+Legend:
+    """
+    simplex = self._parse_state_pp(state)
+    self.assertEqual(0,
+                     simplex.improve_var(simplex.col_owner[1],
+                        direction=-1))
+    self.assertEqual(np.inf,
+                     simplex.improve_var(simplex.col_owner[1],
+                        direction=1))
 
 if __name__ == "__main__":
   absltest.main(testLoader=jtu.JaxTestLoader())
