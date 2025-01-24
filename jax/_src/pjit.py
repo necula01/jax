@@ -567,7 +567,7 @@ def _infer_params_impl(
 
   axes_specs = _flat_axes_specs(ji.abstracted_axes, *args, **kwargs)
 
-  f = lu.wrap_init(fun)
+  f = lu.wrap_init(fun, debug_info=dbg)
   f, res_paths = result_paths(f)
   dbg = dbg and dbg.add_result_paths(result_paths_thunk=res_paths)
   f, dyn_args = argnums_partial_except(f, ji.static_argnums, args, allow_invalid=True)
@@ -627,7 +627,7 @@ def _infer_params_impl(
       if not mesh_lib.get_abstract_mesh() else mesh_lib.get_abstract_mesh())
   with mesh_lib.set_abstract_mesh(abstract_mesh):
     jaxpr, consts, out_avals, attrs_tracked = _create_pjit_jaxpr(
-        flat_fun, in_type, attr_token, dbg,
+        flat_fun, in_type, attr_token,
         HashableFunction(res_paths, closure=()),
         IgnoreKey(ji.inline))
     if config.mutable_array_checks.value:
@@ -1152,7 +1152,7 @@ def _process_in_axis_resources(in_shardings_treedef, in_shardings_leaves,
   attrs_tracked = debug_info and len(debug_info.arg_names) != len(in_avals)
   if not config.dynamic_shapes.value and not attrs_tracked:
     pjit_check_aval_sharding(in_shardings_flat, in_avals,
-                             None if debug_info is None else debug_info.arg_names,
+                             None if debug_info is None else debug_info.safe_arg_names(len(in_avals)),
                              "pjit arguments", allow_uneven_sharding=False)
     check_aval_layout_compatibility(
         in_layouts_flat, in_avals,
@@ -1162,17 +1162,18 @@ def _process_in_axis_resources(in_shardings_treedef, in_shardings_leaves,
 callsites: set[str] = set()
 
 def explain_tracing_cache_miss(
-    f: Callable, unseen_f: bool, cache: dict, key: tuple):
+    fun: lu.WrappedFun, unseen_f: bool, cache: dict, key: tuple):
   if config.check_tracer_leaks.value: return
 
   def unpack(key):
-    transforms, (), _, (in_type, _, debug_info, _, inline), *_, ctx = key
+    transforms, (), _, (in_type, _, _, inline), *_, ctx = key
     # TODO(dougalm,mattjj): enable cache miss explanation with attrs
     _, (_, (in_tree,)), *_ = transforms
-    return in_tree, in_type, debug_info, inline.val, ctx
-  in_tree, in_type, debug_info, inline, ctx = unpack(key)
+    return in_tree, in_type, inline.val, ctx
+  in_tree, in_type, inline, ctx = unpack(key)
   if inline: return
 
+  debug_info = fun.debug_info
   msg: list[str] = []
   p = msg.append
   done = lambda: logger.log(logging.WARNING, '\n'.join(msg))
@@ -1181,7 +1182,7 @@ def explain_tracing_cache_miss(
   p(f"TRACING CACHE MISS at {callsite} because:")
 
   # have we seen this function before at all?
-  fun_name = getattr(f, '__qualname__', f)
+  fun_name = getattr(fun.f, '__qualname__', fun.f)
   if debug_info is not None and debug_info.func_src_info:
     # TODO(necula): clean up the extraction of the source info
     _, *rest = debug_info.func_src_info.split(' at ')
@@ -1189,7 +1190,7 @@ def explain_tracing_cache_miss(
   else:
     src_info = ''
   if unseen_f:
-    p(f"  never seen function:\n    {fun_name} id={id(f)}{src_info}")
+    p(f"  never seen function:\n    {fun_name} id={id(fun.f)}{src_info}")
     if callsite in callsites:
       p("  but seen another function defined on the same line; maybe the function is\n"
         "  being re-defined repeatedly, preventing caching?")
@@ -1293,11 +1294,11 @@ def _create_pjit_jaxpr(
     fun: lu.WrappedFun,
     in_type: core.InputType | Sequence[core.AbstractValue],
     attr_data: int,
-    debug_info: lu.TracingDebugInfo,
     result_paths: Callable,
     ignored_inline: IgnoreKey
 ) -> tuple[core.ClosedJaxpr, list[Any], list[core.AbstractValue],
            list[tuple[PyTreeDef, PyTreeDef, tuple[Any, str]]]]:
+  debug_info = fun.debug_info
   util.test_event("create_pjit_jaxpr")
   del ignored_inline  # just for explain_cache_miss
   if config.no_tracing.value:
@@ -1357,11 +1358,12 @@ def _check_and_canonicalize_out_shardings(
   if not config.dynamic_shapes.value:
     pjit_check_aval_sharding(
         out_shardings_flat, out_avals,
-        None if debug_info is None else debug_info.result_paths,
+        None if debug_info is None else debug_info.safe_result_paths(len(out_avals)),
         "pjit outputs", allow_uneven_sharding=False)
     check_aval_layout_compatibility(
         out_layouts_flat, out_avals,
-        None if debug_info is None else debug_info.result_paths, "jit outputs")
+        None if debug_info is None else debug_info.safe_result_paths(len(out_avals)),
+        "jit outputs")
   return out_shardings_flat, out_layouts_flat
 
 

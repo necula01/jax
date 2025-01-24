@@ -420,7 +420,7 @@ def _trace_to_jaxpr(fun: Callable,
                     in_avals: Sequence[core.AbstractValue],
                     debug: lu.TracingDebugInfo
                     ) -> tuple[core.Jaxpr, Sequence[Any], PyTreeDef]:
-  flat_fun, out_tree = api_util.flatten_fun(lu.wrap_init(fun), in_tree)
+  flat_fun, out_tree = api_util.flatten_fun(lu.wrap_init(fun, debug_info=debug), in_tree)
   try:
     jaxpr, _, consts, () = pe.trace_to_jaxpr_dynamic(flat_fun, in_avals, debug)
   except core.ConcretizationTypeError as e:

@@ -759,8 +759,8 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): some Jaxprs without debug info
-            "None"],
+            "traced_for=cond, fun=my_false_branch, arg_names=('c', 'd'), result_paths=('',)",
+            "traced_for=cond, fun=my_true_branch, arg_names=('a', 'b'), result_paths=('',)"],
         expected_tracer_debug_infos=[
             "traced_for=cond, fun=my_true_branch, arg_names=('a', 'b')",
             "traced_for=cond, fun=my_false_branch, arg_names=('c', 'd')"
@@ -786,12 +786,15 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): some Jaxprs without debug info
-            "None"],
+            # TODO(necula): bad result_paths
+            "traced_for=switch, fun=my_branch0, arg_names=('x0',), result_paths=()",
+            "traced_for=switch, fun=my_branch1, arg_names=('x1',), result_paths=()",
+            "traced_for=switch, fun=my_branch2, arg_names=('x2',), result_paths=()",
+        ],
         expected_tracer_debug_infos=[
             "traced_for=switch, fun=my_branch0, arg_names=('x0',)",
             "traced_for=switch, fun=my_branch1, arg_names=('x1',)",
-            "traced_for=switch, fun=my_branch2, arg_names=('x2',)"
+            "traced_for=switch, fun=my_branch2, arg_names=('x2',)",
         ])
 
   def test_grad_cond_with_remat(self):
@@ -888,8 +891,9 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('',)",
-            'None',  # TODO(necula): some missing debug info
-        ],
+            # TODO(necula): the result_paths is wrong
+            "traced_for=while_cond, fun=my_cond, arg_names=('a',), result_paths=()",
+            "traced_for=while_body, fun=my_body, arg_names=('b',), result_paths=()"],
         expected_tracer_debug_infos=[
             "traced_for=while_cond, fun=my_cond, arg_names=('a',)",
             "traced_for=while_body, fun=my_body, arg_names=('b',)",
@@ -910,8 +914,9 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('[0]', '[1]')",
-            # TODO(necula): some Jaxprs without debug info
-            'None'],
+            # TODO(necula): result_paths is wrong
+            "traced_for=scan, fun=my_scan_body, arg_names=('carry', 'inp'), result_paths=()",
+        ],
         expected_tracer_debug_infos=[
             "traced_for=scan, fun=my_scan_body, arg_names=('carry', 'inp')"
         ])
@@ -980,8 +985,7 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): some Jaxprs without debug info
-            'None'],
+            "traced_for=checkpoint / remat, fun=my_g, arg_names=('y',), result_paths=()"],
         expected_tracer_debug_infos=[
             "traced_for=checkpoint / remat, fun=my_g, arg_names=('y',)"
         ])
@@ -1072,8 +1076,9 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=<lambda>, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): some Jaxprs without debug info
-            'None'],
+            # TODO(necula): bad result_paths
+            "traced_for=custom_dce_rule, fun=my_g_dce, arg_names=('args[1]',), result_paths=()",
+        ],
         expected_tracer_debug_infos=[
             # TODO(necula): bad arg_names
             "traced_for=custom_dce_rule, fun=my_g_dce, arg_names=('args[1]',)",
@@ -1100,8 +1105,9 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=<lambda>, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): some Jaxprs without debug info
-            'None'],
+            # TODO(necula): bad result_paths
+            "traced_for=custom_dce_rule, fun=my_rule, arg_names=(None, 'args[0]'), result_paths=()",
+        ],
         expected_tracer_debug_infos=[
             # TODO(necula): bad arg_names
             "traced_for=custom_dce_rule, fun=my_rule, arg_names=('args[0]',)",
@@ -1201,8 +1207,9 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('x',), result_paths=('',)",
-            # TODO(necula): missing Jaxpr debug info
-            "None"],
+            # TODO(necula): result_paths is wrong
+            "traced_for=pallas_call index_map, fun=my_index_map, arg_names=('i', 'j'), result_paths=()",
+            "traced_for=pallas_call, fun=my_kernel, arg_names=('x_ref', 'y_ref', 'o_ref'), result_paths=()"],
         expected_tracer_debug_infos=[
             "traced_for=pallas_call index_map, fun=my_index_map, arg_names=('i', 'j')",
             "traced_for=pallas_call, fun=my_kernel, arg_names=('x_ref', 'y_ref', 'o_ref')",
@@ -1230,7 +1237,10 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_f, arg_names=('input',), result_paths=('',)",
-            "None",  # TODO(necula): missing tracer debug info
+            # TODO(necula): function source location points in JAX internals
+            # TODO(necula): arg_names and result_paths are wrong
+            re.compile(r"traced_for=checkify_pallas, fun=checked_kernel_fn at .*/pallas_call.py:.*, arg_names=\('args\[0\]', .*\), result_paths=\(\)"),
+            re.compile(r"traced_for=pallas_call index_map, fun=<lambda> at .*/pallas/core.py:.*, arg_names=\(\), result_paths=\(\)"),
         ],
         expected_tracer_debug_infos=[
             "traced_for=pallas_call, fun=kernel, arg_names=('x_ref', 'y_ref')",
@@ -1254,7 +1264,8 @@ class DebugInfoTest(jtu.JaxTestCase):
         leaked_tracers=leaked_tracers,
         expected_jaxpr_debug_infos=[
             "traced_for=jit, fun=my_consts, arg_names=('x',), result_paths=('',)",
-            "None"
+            # TODO(necula): result_paths is wrong
+            "traced_for=composite, fun=my_consts, arg_names=('x',), result_paths=()",
         ],
         expected_tracer_debug_infos=[
             "traced_for=composite, fun=my_consts, arg_names=('x',)"])

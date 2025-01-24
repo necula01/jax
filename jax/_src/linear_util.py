@@ -273,14 +273,14 @@ class TracingDebugInfo(NamedTuple):
   # e.g. ('[0]', '[1]', ...)
   result_paths_thunk: Callable[[], tuple[str, ...]] | None
 
-  @classmethod
-  def from_jaxpr(cls, jaxpr: core.ClosedJaxpr) -> TracingDebugInfo | None:
-    jaxpr_dbg = jaxpr.jaxpr._debug_info
-    if jaxpr_dbg is None: return None
-    return TracingDebugInfo(jaxpr_dbg.traced_for,
-                            jaxpr_dbg.func_src_info,
-                            jaxpr_dbg.arg_names,
-                            lambda: jaxpr_dbg.result_paths)
+  def safe_arg_names(self, expected: int) -> tuple[str | None, ...]:
+    """Get the arg_names with a safety check."""
+    if len(self.arg_names) == expected:
+      return self.arg_names
+    else:
+      # TODO(necula): this should not happen
+      return (None,) * expected
+
 
   def add_result_paths(self, result_paths_thunk: Callable[[], tuple[str, ...]]
                        ) -> TracingDebugInfo:
@@ -341,13 +341,17 @@ def add_debug_info(f: WrappedFun, debug_info: TracingDebugInfo | None
   return WrappedFun(f.f, f.f_transformed, f.transforms, f.stores, f.params, f.in_type, debug_info)
 
 
-def cache(call: Callable, *, explain: Callable | None = None):
+def cache(call: Callable, *,
+          explain: Callable[[WrappedFun, bool, dict, tuple]] | None = None):
   """Memoization decorator for functions taking a WrappedFun as first argument.
 
   Args:
     call: a Python callable that takes a WrappedFun as its first argument. The
       underlying transforms and params on the WrappedFun are used as part of the
       memoization cache key.
+
+    explain: a function that is invoked upon cache misses to log an explanation
+      of the miss.
 
   Returns:
      A memoized version of ``call``.
@@ -364,7 +368,7 @@ def cache(call: Callable, *, explain: Callable | None = None):
     else:
       ans = call(fun, *args)
       if explain and config.explain_cache_misses.value:
-        explain(fun.f, cache is new_cache, cache, key)
+        explain(fun, cache is new_cache, cache, key)
       cache[key] = (ans, fun.stores)
 
     return ans

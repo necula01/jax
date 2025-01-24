@@ -1410,13 +1410,13 @@ def _trace_kernel_to_jaxpr(
   if interpret:
     kernel_avals = tuple(map(_logical_aval_to_interpret_mode_aval,
                              kernel_avals))
+  fake_kernel_args = kernel_in_tree.unflatten(kernel_avals)
+  debug = api_util.tracing_debug_info("pallas_call", fun, fake_kernel_args, {})
   wrapped_kernel_fun, out_tree_thunk = api_util.flatten_fun_nokwargs(
-      lu.wrap_init(fun), kernel_in_tree)
+      lu.wrap_init(fun, debug_info=debug), kernel_in_tree)
   wrapped_kernel_fun = primitives.wrap_with_transforms(
       wrapped_kernel_fun, kernel_in_transforms
   )
-  fake_kernel_args = kernel_in_tree.unflatten(kernel_avals)
-  debug = api_util.tracing_debug_info("pallas_call", fun, fake_kernel_args, {})
   with grid_mapping.trace_env():
     jaxpr, _, consts, () = pe.trace_to_jaxpr_dynamic(wrapped_kernel_fun,
                                                      kernel_avals, debug)
