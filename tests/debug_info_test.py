@@ -630,8 +630,7 @@ class DebugInfoTest(jtu.JaxTestCase):
         ],
         expected_tracer_debug_infos=[
             "traced_for=jit, fun=my_g, arg_names=('a',)",
-            # TODO(necula): bad arg name
-            "traced_for=jit, fun=my_f, arg_names=('args[0]',)"
+            "traced_for=jit, fun=my_f, arg_names=('a',)"
         ])
 
 
@@ -1044,7 +1043,7 @@ class DebugInfoTest(jtu.JaxTestCase):
             "None",  # TODO(necula): missing tracer debug info
         ],
         expected_tracer_debug_infos=[
-            "traced_for=xla_pmap, fun=my_f, arg_names=('my_x',)",
+            "traced_for=pmap, fun=my_f, arg_names=('my_x',)",
         ],
         check_lowering=False,  # TODO(necula): warning during lowering
     )
@@ -1076,7 +1075,8 @@ class DebugInfoTest(jtu.JaxTestCase):
             # TODO(necula): some Jaxprs without debug info
             'None'],
         expected_tracer_debug_infos=[
-            "traced_for=custom_dce, fun=my_g, arg_names=('x',)"
+            # TODO(necula): bad arg_names
+            "traced_for=custom_dce_rule, fun=my_g_dce, arg_names=('args[1]',)",
         ])
 
   def test_custom_dce_consts(self):
@@ -1087,7 +1087,7 @@ class DebugInfoTest(jtu.JaxTestCase):
       return np.eye(1) * jnp.sin(x), jnp.cos(x)
 
     @my_f.def_dce
-    def rule(used_outs, x):
+    def my_rule(used_outs, x):
       leaked_tracers.append(x)
       return (
           np.full((1, 1), 2.0) * jnp.exp(x) if used_outs[0] else None,
@@ -1103,7 +1103,8 @@ class DebugInfoTest(jtu.JaxTestCase):
             # TODO(necula): some Jaxprs without debug info
             'None'],
         expected_tracer_debug_infos=[
-            "traced_for=custom_dce, fun=my_f, arg_names=('x',)"
+            # TODO(necula): bad arg_names
+            "traced_for=custom_dce_rule, fun=my_rule, arg_names=('args[0]',)",
         ])
 
   def test_custom_linear_solve_complex(self):

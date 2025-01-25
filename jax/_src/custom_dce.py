@@ -191,7 +191,7 @@ class custom_dce:
 
       return core.ClosedJaxpr(dce_jaxpr, dce_consts), used_ins
 
-    jaxpr, _, consts, () = pe.trace_to_jaxpr_dynamic(flat_fun, in_avals, debug)
+    jaxpr, _, consts, () = pe.trace_to_jaxpr_dynamic(flat_fun, in_avals, debug_rule)
     closed_call = pe.close_jaxpr(pe.convert_constvars_jaxpr(jaxpr))
     out_avals = closed_call.out_avals
     out_flat = custom_dce_p.bind(

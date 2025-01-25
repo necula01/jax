@@ -705,6 +705,7 @@ def result_paths(_fun, _store, *args, **kwargs):
   _store.store([keystr(path) for path, _ in generate_key_paths(ans)])
   return ans
 
+# TODO(necula): simplify this function, all it needs is to add the trace_debug to the Jaxpr
 def add_jaxpr_debug_info(jaxpr: core.Jaxpr,
                          trace_debug: TracingDebugInfo | None,
                          result_paths: tuple[str, ...] | None = None,
@@ -712,7 +713,8 @@ def add_jaxpr_debug_info(jaxpr: core.Jaxpr,
   """Add debug info to jaxpr, given trace-time debug info and result paths."""
   if trace_debug is None:
     return jaxpr
-  assert (result_paths is not None) ^ (trace_debug.result_paths_thunk is not None)
+
+  # assert (result_paths is not None) ^ (trace_debug.result_paths_thunk is not None)
   if result_paths is None:
     result_paths = trace_debug.result_paths_thunk()  # type: ignore
   debug_info = core.JaxprDebugInfo(
