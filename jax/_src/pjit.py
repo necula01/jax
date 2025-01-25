@@ -569,6 +569,7 @@ def _infer_params_impl(
 
   f = lu.wrap_init(fun)
   f, res_paths = result_paths(f)
+  dbg = dbg and dbg.add_result_paths(result_paths_thunk=res_paths)
   f, dyn_args = argnums_partial_except(f, ji.static_argnums, args, allow_invalid=True)
   del args
 
@@ -1293,7 +1294,7 @@ def _create_pjit_jaxpr(
     in_type: core.InputType | Sequence[core.AbstractValue],
     attr_data: int,
     debug_info: lu.TracingDebugInfo,
-    out_paths: Callable,
+    result_paths: Callable,
     ignored_inline: IgnoreKey
 ) -> tuple[core.ClosedJaxpr, list[Any], list[core.AbstractValue],
            list[tuple[PyTreeDef, PyTreeDef, tuple[Any, str]]]]:
@@ -1305,19 +1306,18 @@ def _create_pjit_jaxpr(
   with dispatch.log_elapsed_time(
       "Finished tracing + transforming {fun_name} for pjit in {elapsed_time:.9f} sec",
       fun_name=fun.__name__, event=dispatch.JAXPR_TRACE_EVENT):
-    pe_debug = debug_info and pe.tracing_debug_info_final(fun, debug_info.traced_for)
     if config.dynamic_shapes.value:
       jaxpr, global_out_avals, consts = pe.trace_to_jaxpr_dynamic2(
-          lu.annotate(fun, cast(core.InputType, in_type)), debug_info=pe_debug)
+          lu.annotate(fun, cast(core.InputType, in_type)), debug_info=debug_info)
       attrs_tracked = []
     else:
       jaxpr, global_out_avals, consts, attrs_tracked = pe.trace_to_jaxpr_dynamic(
-          fun, in_type, debug_info=pe_debug)
+          fun, in_type, debug_info=debug_info)
       # assert attr_data is sentinel or attr_data matches attrs_tracked
 
   # TODO(dougalm,mattjj): enable debug info with attrs_tracked
   if not config.dynamic_shapes.value and not attrs_tracked:
-    jaxpr = add_jaxpr_debug_info(jaxpr, debug_info, out_paths())
+    jaxpr = add_jaxpr_debug_info(jaxpr, debug_info, result_paths())
 
   if config.debug_key_reuse.value:
     # Import here to avoid circular imports
